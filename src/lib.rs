@@ -4,19 +4,16 @@
 //! UI component code to prevent having to maintain multiple versions of the
 //! same code and having inconsistent UI" (Juliet, 24 Oct).
 //!
-//! - [`switch()`], [`switch_maybe`] and [`SwitchItem`]: libcosmic's switch
-//!   in the muted accent (household rule 6).
-//! - [`muted`]: any libcosmic widget drawn with the muted accent in place
-//!   of the accent, and [`muted_colours`], the two colours themselves.
+//! - [`switch()`], [`switch_maybe`], [`toggler()`] and [`SwitchItem`]:
+//!   libcosmic's switch in the muted accent (household rule 6).
+//! - [`muted_colours`]: the muted accent of a theme, and what goes on it.
 //!
 //! Plain colour maths stays in household-kit's `household-tones`; this
 //! crate turns it into libcosmic's types.
 
-mod muted;
 mod switch;
 
-pub use muted::{muted, muted_colours};
-pub use switch::{SwitchItem, switch, switch_maybe};
+pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 
 #[cfg(test)]
 mod switch_tests;

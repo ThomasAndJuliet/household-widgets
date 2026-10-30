@@ -15,13 +15,13 @@ What goes where (household-ui `RULES.md`, memory `shared-ui-code`):
 
 ## What is here
 
-The muted switch, rule 6: a switch that is on uses the muted accent ("yes use the muted accent for them all", Juliet, 30 Oct). Everything but the "on" fill is libcosmic's.
+The muted switch, rule 6: a switch that is on uses the muted accent ("yes use the muted accent for them all", Juliet, 30 Oct). It is libcosmic's toggler with the toggler class `theme::Toggler::accent`, so only the "on" fill is ours; hover and disabled follow from it as they do from the accent.
 
 | Call | Is |
 | --- | --- |
 | `switch(on, message)` | a switch; `message` gets the new state |
 | `switch_maybe(on, Some(message))` | the same, disabled with `None` |
-| `muted(content)` | any widget drawn with the muted accent in place of the accent, e.g. `muted(widget::toggler(on).label(label).spacing(8).on_toggle(message))` |
+| `toggler(on)` | libcosmic's `widget::toggler` in the muted accent, for a switch with options, e.g. `toggler(on).label(label).spacing(8).on_toggle(message)` |
 | `item.switch(on, message)`, `item.switch_maybe(on, message)` | libcosmic's `settings::item::builder(title).toggler(..)` and `.toggler_maybe(..)`, the whole row clickable; import `household_widgets::SwitchItem` |
 | `muted_colours(&theme)` | the muted accent and the colour of text and icons on it |
 

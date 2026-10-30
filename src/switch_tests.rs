@@ -6,11 +6,16 @@
 //!
 //! The real widgets are drawn with iced's headless tiny-skia renderer and
 //! the pixels read, as household-test's painter does. Each expected look is
-//! libcosmic's own toggler, drawn beside the switch in the same way.
+//! libcosmic's own toggler, drawn beside the switch in the same way: in the
+//! theme itself, or in [`accent_muted`], a theme with the muted accent for
+//! its accent, which is what rule 6 asks a switch to look like.
 
 use std::sync::Arc;
 
-use cosmic::cosmic_theme::{ThemeBuilder, palette::Srgb as Palette};
+use cosmic::cosmic_theme::{
+    ThemeBuilder,
+    palette::{Srgb as Palette, Srgba},
+};
 use cosmic::iced::advanced::clipboard;
 use cosmic::iced::advanced::renderer::{Headless, Style};
 use cosmic::iced::runtime::user_interface::{Cache, UserInterface};
@@ -19,8 +24,7 @@ use cosmic::widget::settings;
 use cosmic::{Element, Theme, widget};
 use household_tones::{Srgb, muted_accent, on_muted};
 
-use crate::muted::{MAX_THEMES, kept_themes, muted_theme};
-use crate::{SwitchItem, muted, muted_colours, switch, switch_maybe};
+use crate::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 
 type Message = bool;
 type Rgb = [u8; 3];
@@ -141,6 +145,15 @@ fn themes() -> [(Theme, Rgb, Srgb, bool); 2] {
     ]
 }
 
+/// `theme` with the muted accent as its accent, for libcosmic's plain
+/// toggler to be drawn in
+fn accent_muted(theme: &Theme) -> Theme {
+    let (muted, _) = muted_colours(theme);
+    let mut changed = theme.cosmic().clone();
+    changed.accent.base = Srgba::new(muted.r, muted.g, muted.b, muted.a);
+    Theme::custom(Arc::new(changed))
+}
+
 fn distance(a: Rgb, b: Rgb) -> u8 {
     (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap()
 }
@@ -188,18 +201,6 @@ fn muted_colours_are_household_tones() {
             [on.r, on.g, on.b],
             [on_expected.r, on_expected.g, on_expected.b]
         );
-        // The theme a switch is drawn with carries both
-        let changed = muted_theme(&theme);
-        let base = changed.cosmic().accent.base;
-        let text = changed.cosmic().accent.on;
-        assert_eq!(
-            [base.red, base.green, base.blue],
-            [muted.r, muted.g, muted.b]
-        );
-        assert_eq!(
-            [text.red, text.green, text.blue],
-            [on_expected.r, on_expected.g, on_expected.b]
-        );
     }
 }
 
@@ -238,7 +239,7 @@ fn a_disabled_on_switch_is_libcosmics_faded_muted_fill() {
             None,
             &[],
         );
-        let reference = draw(|| plain_disabled(true), &muted_theme(&theme), None, &[]);
+        let reference = draw(|| plain_disabled(true), &accent_muted(&theme), None, &[]);
         assert!(ours.rgba == reference.rgba, "the frames differ");
         // At half alpha, over the black drawn on
         let enabled = draw(|| switch(true, |on| on), &theme, None, &[]).at(ON_FILL);
@@ -256,7 +257,7 @@ fn a_hovered_switch_is_libcosmics_hover_on_the_muted_fill() {
     for (theme, ..) in themes() {
         let hover = Some(ON_FILL);
         let ours = draw(|| switch(true, |on| on), &theme, hover, &[]);
-        let reference = draw(|| plain(true), &muted_theme(&theme), hover, &[]);
+        let reference = draw(|| plain(true), &accent_muted(&theme), hover, &[]);
         assert!(ours.rgba == reference.rgba, "the frames differ");
         let rest = draw(|| switch(true, |on| on), &theme, None, &[]);
         assert_ne!(ours.at(ON_FILL), rest.at(ON_FILL), "no hover drawn");
@@ -295,22 +296,28 @@ fn a_disabled_switch_publishes_nothing() {
 /// Marginalium's presenter console: `.label(..).spacing(..)`
 #[test]
 fn a_labelled_switch_keeps_its_layout_and_label() {
-    let labelled = |on: bool| {
-        widget::toggler(on)
+    fn labelled(toggler: widget::Toggler<'static, Message>) -> Element<'static, Message> {
+        toggler
             .label("Pointer".to_string())
             .spacing(8)
             .on_toggle(|on| on)
-    };
+            .into()
+    }
     for (theme, accent, _, dark) in themes() {
         let [r, g, b] = accent;
         let expected = rgb8(muted_accent(Srgb::from_rgb8(r, g, b), dark));
         // Off: exactly libcosmic's, label and all
-        let ours = draw(|| muted(labelled(false)), &theme, None, &[]);
-        let libcosmic = draw(|| labelled(false).into(), &theme, None, &[]);
+        let ours = draw(|| labelled(toggler(false)), &theme, None, &[]);
+        let libcosmic = draw(|| labelled(widget::toggler(false)), &theme, None, &[]);
         assert!(ours.rgba == libcosmic.rgba, "the frames differ");
         // On: libcosmic's, with the muted fill
-        let ours = draw(|| muted(labelled(true)), &theme, None, &[]);
-        let reference = draw(|| labelled(true).into(), &muted_theme(&theme), None, &[]);
+        let ours = draw(|| labelled(toggler(true)), &theme, None, &[]);
+        let reference = draw(
+            || labelled(widget::toggler(true)),
+            &accent_muted(&theme),
+            None,
+            &[],
+        );
         assert!(ours.rgba == reference.rgba, "the frames differ");
         let fill = (0..240)
             .map(|x| Point::new(x as f32, 12.0))
@@ -363,48 +370,4 @@ fn a_disabled_settings_row_publishes_nothing() {
         &click(Point::new(40.0, 20.0)),
     );
     assert!(shot.messages.is_empty());
-}
-
-#[test]
-fn the_kept_themes_are_bounded_and_reused() {
-    let theme = theme_with(false, [1, 2, 3]);
-    let _ = muted_theme(&theme);
-    let kept = kept_themes();
-    for _ in 0..100 {
-        let _ = muted_theme(&theme);
-    }
-    assert_eq!(kept_themes(), kept, "a theme kept is used again");
-    for i in 0..(3 * MAX_THEMES) as u8 {
-        let _ = muted_theme(&theme_with(i % 2 == 0, [i, 40, 80]));
-        assert!(kept_themes() <= MAX_THEMES, "{} themes kept", kept_themes());
-    }
-}
-
-/// A theme that differs only in its mode, or only in something other than
-/// its accent, is its own: the system's Style setting changes the corners
-/// and leaves the accent
-#[test]
-fn a_kept_theme_follows_the_rest_of_the_system_theme() {
-    let light = theme_with(false, [0x7f, 0x24, 0x00]);
-    let dark = theme_with(true, [0x7f, 0x24, 0x00]);
-    let mut square = light.cosmic().clone();
-    square.corner_radii.radius_xl = [0.0; 4];
-    let square = Theme::custom(Arc::new(square));
-
-    assert!(!muted_theme(&light).cosmic().is_dark);
-    assert!(muted_theme(&dark).cosmic().is_dark);
-    let _ = draw(|| switch(false, |on| on), &light, None, &[]);
-    let ours = draw(|| switch(false, |on| on), &square, None, &[]);
-    let libcosmic = draw(|| plain(false), &square, None, &[]);
-    assert!(ours.rgba == libcosmic.rgba, "the frames differ");
-}
-
-/// The layer a widget is drawn on survives, for `muted` around widgets that
-/// look at it
-#[test]
-fn the_muted_theme_keeps_the_layer() {
-    let (theme, ..) = &themes()[0];
-    let mut layered = theme.clone();
-    layered.layer = cosmic::cosmic_theme::Layer::Primary;
-    assert_eq!(muted_theme(&layered).layer, layered.layer);
 }
