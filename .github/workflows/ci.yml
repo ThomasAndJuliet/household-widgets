@@ -1,0 +1,55 @@
+name: CI
+# The crate's own checks: formatting, Clippy and its tests. The runner and
+# its fallback are neo-infrastructure's (services/ci-runners), as
+# household-kit's CI has them: neo's Ubuntu runner by default, GitHub-hosted
+# when the CI_RUNNER variable is "hosted". household-widgets is a library,
+# so there is no Flatpak build here.
+#
+# The crate is built against the household libcosmic fork at the revision
+# in Cargo.toml's [patch], and household-tones from household-kit, private
+# repositories fetched over ssh: this repository needs the secrets
+# LIBCOSMIC_DEPLOY_KEY and HOUSEHOLD_KIT_DEPLOY_KEY, the private halves of
+# their read-only deploy keys. Without them the job stops at that step with
+# a message naming the secret. The [patch] is for this build only; an app
+# that depends on household-widgets builds it with the app's own libcosmic.
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  check:
+    name: Format, Clippy and tests
+    runs-on: ${{ vars.CI_RUNNER == 'hosted' && 'ubuntu-24.04' || 'neo-ubuntu' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The version neo's build toolbox has, so that formatting and Clippy
+      # say the same in CI as in the builds agents run there
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt --all --check
+      # What libcosmic builds against
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libinput-dev libudev-dev libdbus-1-dev
+      - name: Let git and cargo fetch the household libcosmic fork and household-kit
+        env:
+          LIBCOSMIC_DEPLOY_KEY: ${{ secrets.LIBCOSMIC_DEPLOY_KEY }}
+          HOUSEHOLD_KIT_DEPLOY_KEY: ${{ secrets.HOUSEHOLD_KIT_DEPLOY_KEY }}
+        run: scripts/ci-private-crates.sh libcosmic household-kit
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked

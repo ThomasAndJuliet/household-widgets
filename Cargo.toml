@@ -1,0 +1,47 @@
+[package]
+name = "household-widgets"
+description = "The household apps' shared libcosmic widgets: what more than one app draws, in one place"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+publish = false
+repository = "https://github.com/ThomasAndJuliet/household-widgets"
+
+# libcosmic, as an app depends on it (see the README). It names upstream's
+# URL with no branch or rev on purpose, as household-test's does: every app
+# already has `[patch."https://github.com/pop-os/libcosmic.git"]` pointing at
+# the household fork, and a patch replaces every dependency on that URL, so
+# this crate builds against the app's own libcosmic and the widget, theme
+# and renderer types are the app's. Naming the fork here instead would give
+# an app two libcosmics whose types do not match. The features are the least
+# these widgets need; the app's own are added to them.
+[dependencies]
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false }
+# The colour maths (the muted accent, what goes on it); the app's Cargo.lock
+# decides the revision
+household-tones = { git = "ssh://git@github.com/ThomasAndJuliet/household-kit.git" }
+
+# For this repository's own build only (its tests, Clippy and CI): the
+# household libcosmic fork at a fixed revision. Cargo reads [patch] only
+# from the workspace being built, so an app that depends on household-widgets
+# never sees this one: its own [patch] on pop-os/libcosmic (every household
+# app has it) chooses the libcosmic this crate is built with, and there is
+# one libcosmic in its lock. Move this pin when the apps move, so that CI
+# here builds against what they use.
+[patch."https://github.com/pop-os/libcosmic.git"]
+libcosmic = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+cosmic-config = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+cosmic-config-derive = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+cosmic-theme = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_core = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_debug = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_futures = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_graphics = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_program = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_renderer = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_runtime = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_tiny_skia = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_wgpu = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
+iced_widget = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "183fe5a8180cd2f3bedc960bacfa2c51ddf870e4" }
