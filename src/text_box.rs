@@ -141,18 +141,19 @@ trait Kept {
 }
 
 /// The steps a box can go back and forward through: each the state before
-/// it (in `undo`) or after it (in `redo`). `S` is a box's whole state, so
-/// that going back is putting it back: a text editor's text and caret, a
-/// one-line box's value. At most [`STEPS`] steps and [`BYTES`] bytes.
+/// it (in `undo`) or after it (in `redo`), and the app's own part of it, if
+/// any. `S` is a box's whole state, so that going back is putting it back: a
+/// text editor's text and caret, a one-line box's value. At most [`STEPS`]
+/// steps and [`BYTES`] bytes.
 #[derive(Debug)]
-struct History<S> {
-    undo: VecDeque<S>,
-    redo: Vec<S>,
+struct History<S, P> {
+    undo: VecDeque<(S, Option<P>)>,
+    redo: Vec<(S, Option<P>)>,
     /// What `undo` and `redo` hold, in bytes
     bytes: usize,
 }
 
-impl<S> Default for History<S> {
+impl<S, P> Default for History<S, P> {
     fn default() -> Self {
         Self {
             undo: VecDeque::new(),
@@ -162,37 +163,44 @@ impl<S> Default for History<S> {
     }
 }
 
-impl<S: Kept> History<S> {
-    /// A step taken from `before`: what Redo would have brought back is gone
-    fn record(&mut self, before: S) {
-        self.bytes -= self.redo.drain(..).map(|s| s.bytes()).sum::<usize>();
+impl<S: Kept, P: Clone> History<S, P> {
+    /// A step taken from `before`, with the app's `part` of it: what Redo
+    /// would have brought back is gone
+    fn record(&mut self, before: S, part: Option<P>) {
+        self.drop_redo();
         self.bytes += before.bytes();
-        self.undo.push_back(before);
+        self.undo.push_back((before, part));
         while self.undo.len() > STEPS || (self.bytes > BYTES && self.undo.len() > 1) {
-            let oldest = self.undo.pop_front().expect("a step");
+            let (oldest, _) = self.undo.pop_front().expect("a step");
             self.bytes -= oldest.bytes();
         }
     }
 
-    /// The state before the last step, `now` kept for Redo
-    fn undo(&mut self, now: S) -> Option<S> {
-        let before = self.undo.pop_back()?;
+    /// The state before the last step and its part, `now` kept for Redo
+    fn undo(&mut self, now: S) -> Option<(S, Option<P>)> {
+        let (before, part) = self.undo.pop_back()?;
         self.bytes = self.bytes + now.bytes() - before.bytes();
-        self.redo.push(now);
-        Some(before)
+        self.redo.push((now, part.clone()));
+        Some((before, part))
     }
 
-    /// The state after the step last undone, `now` kept for Undo
-    fn redo(&mut self, now: S) -> Option<S> {
-        let after = self.redo.pop()?;
+    /// The state after the step last undone and its part, `now` kept for
+    /// Undo
+    fn redo(&mut self, now: S) -> Option<(S, Option<P>)> {
+        let (after, part) = self.redo.pop()?;
         self.bytes = self.bytes + now.bytes() - after.bytes();
-        self.undo.push_back(now);
-        Some(after)
+        self.undo.push_back((now, part.clone()));
+        Some((after, part))
     }
 
     /// What Redo would have brought back is gone, the steps before kept
     fn drop_redo(&mut self) {
-        self.bytes -= self.redo.drain(..).map(|s| s.bytes()).sum::<usize>();
+        self.bytes -= self.redo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
+    }
+
+    /// What Undo would have taken back is gone, the steps Redo has kept
+    fn drop_undo(&mut self) {
+        self.bytes -= self.undo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
     }
 }
 
@@ -237,12 +245,21 @@ impl Kept for Snapshot {
 /// A text box's text and caret, with its undo history; see the module's
 /// description. It derefs to iced's [`Content`], for the editor widget and
 /// for reading; changes go through [`perform`](Self::perform),
-/// [`replace`](Self::replace) and [`amend`](Self::amend), or a new box
+/// [`replace`](Self::replace), [`replace_with`](Self::replace_with) and
+/// [`amend`](Self::amend), or a new box
 /// ([`starting_with`](Self::starting_with)).
-#[derive(Default)]
-pub struct TextBox {
+///
+/// `P` is the app's own part of a step, for a step that is more than the
+/// text ([`replace_with`](Self::replace_with)): a prompt stashed is also a
+/// card added. Undo and Redo hand it back ([`Turn`]) for the app to undo or
+/// redo its part. Before, the app can look at it
+/// ([`undo_part`](Self::undo_part)) and, if its part can no longer be
+/// undone, end the history there ([`forget_undo`](Self::forget_undo)).
+/// Without parts, `P` is `()`: a `let` then names the type, `let draft:
+/// TextBox = TextBox::new()`.
+pub struct TextBox<P = ()> {
     content: Content,
-    history: History<Snapshot>,
+    history: History<Snapshot, P>,
     /// The run of typing or deleting going on, if any
     run: Option<Run>,
     /// Where the selection began before the click just done, for its
@@ -250,7 +267,26 @@ pub struct TextBox {
     clicked_from: Option<Position>,
 }
 
-impl Deref for TextBox {
+impl<P> Default for TextBox<P> {
+    fn default() -> Self {
+        Self {
+            content: Content::default(),
+            history: History::default(),
+            run: None,
+            clicked_from: None,
+        }
+    }
+}
+
+/// A step with the app's part undone or redone: the part, for the app to
+/// undo or redo its own side of it
+#[derive(Clone, Debug, PartialEq)]
+pub enum Turn<P> {
+    Undone(P),
+    Redone(P),
+}
+
+impl<P> Deref for TextBox<P> {
     type Target = Content;
 
     fn deref(&self) -> &Content {
@@ -258,7 +294,7 @@ impl Deref for TextBox {
     }
 }
 
-impl std::fmt::Debug for TextBox {
+impl<P> std::fmt::Debug for TextBox<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextBox")
             .field("text", &self.content.text())
@@ -269,7 +305,7 @@ impl std::fmt::Debug for TextBox {
     }
 }
 
-impl TextBox {
+impl<P: Clone> TextBox<P> {
     /// An empty box, with nothing to undo
     pub fn new() -> Self {
         Self::default()
@@ -299,8 +335,40 @@ impl TextBox {
         let before = self.snapshot();
         self.set(text, caret);
         if self.content.text() != before.text {
-            self.history.record(before);
+            self.history.record(before, None);
         }
+    }
+
+    /// The text replaced by the app as one step with `part`, the app's own
+    /// part of it, which Undo and Redo hand back: always a step, the text
+    /// changed or not
+    pub fn replace_with(&mut self, text: &str, caret: Caret, part: P) {
+        let before = self.snapshot();
+        self.set(text, caret);
+        self.history.record(before, Some(part));
+    }
+
+    /// The app's part of the step Undo would take back, if it has one
+    pub fn undo_part(&self) -> Option<&P> {
+        self.history.undo.back().and_then(|(_, part)| part.as_ref())
+    }
+
+    /// The app's part of the step Redo would bring back, if it has one
+    pub fn redo_part(&self) -> Option<&P> {
+        self.history.redo.last().and_then(|(_, part)| part.as_ref())
+    }
+
+    /// Nothing more to undo: a step whose app's part can no longer be
+    /// undone ends the history there (going back past it would bring the
+    /// text back without the rest)
+    pub fn forget_undo(&mut self) {
+        self.history.drop_undo();
+    }
+
+    /// Nothing more to redo, for a step whose app's part can no longer be
+    /// redone
+    pub fn forget_redo(&mut self) {
+        self.history.drop_redo();
     }
 
     /// The text replaced by the app as part of its last step, which Undo
@@ -311,22 +379,25 @@ impl TextBox {
         self.history.drop_redo();
     }
 
-    /// Does `action`, keeping the history
-    pub fn perform(&mut self, action: impl Into<Action>) {
+    /// Does `action`, keeping the history. A step undone or redone that has
+    /// the app's part hands it back, for the app to do its side
+    pub fn perform(&mut self, action: impl Into<Action>) -> Option<Turn<P>> {
         let clicked_from = self.clicked_from.take();
         match action.into() {
             Action::Undo => {
                 if self.can_undo() {
                     let now = self.snapshot();
-                    let before = self.history.undo(now).expect("a step to undo");
+                    let (before, part) = self.history.undo(now).expect("a step to undo");
                     self.restore(before);
+                    return part.map(Turn::Undone);
                 }
             }
             Action::Redo => {
                 if self.can_redo() {
                     let now = self.snapshot();
-                    let after = self.history.redo(now).expect("a step to redo");
+                    let (after, part) = self.history.redo(now).expect("a step to redo");
                     self.restore(after);
+                    return part.map(Turn::Redone);
                 }
             }
             Action::DeleteWordBefore => self.delete_word(Motion::WordLeft, Edit::Backspace),
@@ -364,6 +435,7 @@ impl TextBox {
                 self.clicked_from = from;
             }
         }
+        None
     }
 
     /// An edit of iced's: part of the run going on, or a step of its own
@@ -419,7 +491,7 @@ impl TextBox {
         change(&mut self.content);
         let changed = self.mark() != mark;
         if changed {
-            self.history.record(before);
+            self.history.record(before, None);
         }
         changed
     }
@@ -794,31 +866,31 @@ mod history_tests {
 
     #[test]
     fn the_history_keeps_at_most_its_steps_and_bytes() {
-        let mut history = History::default();
+        let mut history: History<State, ()> = History::default();
         for _ in 0..STEPS + 5 {
-            history.record(State(1));
+            history.record(State(1), None);
         }
         assert_eq!(history.undo.len(), STEPS);
         assert_eq!(history.bytes, STEPS);
         // Big states: the oldest go first, the newest is always kept
-        let mut history = History::default();
+        let mut history: History<State, ()> = History::default();
         for n in 1..=8 {
-            history.record(State(BYTES / 4 + n));
+            history.record(State(BYTES / 4 + n), None);
         }
         assert_eq!(history.undo.len(), 3);
-        assert_eq!(history.undo.front().map(|s| s.0), Some(BYTES / 4 + 6));
-        history.record(State(2 * BYTES));
+        assert_eq!(history.undo.front().map(|(s, _)| s.0), Some(BYTES / 4 + 6));
+        history.record(State(2 * BYTES), None);
         assert_eq!(
             history.undo.len(),
             1,
             "one step bigger than the bound is kept alone"
         );
         // Undo and Redo move bytes between the two, and a new step drops Redo
-        let mut history = History::default();
-        history.record(State(10));
-        let before = history.undo(State(20)).expect("a step");
+        let mut history: History<State, ()> = History::default();
+        history.record(State(10), None);
+        let (before, _) = history.undo(State(20)).expect("a step");
         assert_eq!((before.0, history.bytes), (10, 20));
-        history.record(State(5));
+        history.record(State(5), None);
         assert_eq!(history.bytes, 5);
         assert!(history.redo.is_empty());
     }
