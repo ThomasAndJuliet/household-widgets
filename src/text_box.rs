@@ -11,11 +11,16 @@
 //! - [`TextBox`]: its text and caret, as iced's `Content` (which it derefs
 //!   to, for `text_editor(&text_box)`, `.text()`, `.selection()`), with an
 //!   undo history. Every change goes through [`TextBox::perform`] or
-//!   [`TextBox::replace`], so every change can be undone.
+//!   [`TextBox::replace`] (or [`TextBox::amend`]), so every change can be
+//!   undone; a new box ([`TextBox::starting_with`]) has nothing to undo.
+//!   Where the caret goes when the app sets the text is always said:
+//!   [`Caret`].
 //! - [`Action`]: what the box is asked to do: iced's own actions, and
 //!   Undo, Redo, deleting a word, and Shift+click.
 //! - [`key_binding`]: the standard keys (household rule 21c). An app with
 //!   keys of its own handles those first and ends its binding with this.
+//!   [`history_key`] is its Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, for keys
+//!   that reach a box some other way.
 //! - [`shift_click`]: round the box, so that Shift+click extends the
 //!   selection.
 //!
@@ -38,7 +43,9 @@
 //! ([`TextBox::replace`]) are a step each. Typing over a selection is one
 //! step with the typing that follows it. New typing after Ctrl+Z drops
 //! what Ctrl+Shift+Z would have brought back. The history keeps the last
-//! [`STEPS`] steps. Undo puts back the caret and selection as they were.
+//! [`STEPS`] steps, and at most [`BYTES`] of text. Undo puts back the caret
+//! and selection as they were, a word or line selected by a double or
+//! triple click too.
 //!
 //! **Keys** ([`key_binding`]), added to iced's: Ctrl+Z undoes; Ctrl+Shift+Z
 //! and Ctrl+Y redo; Ctrl+Backspace and Ctrl+Delete delete a word, or the
@@ -56,6 +63,7 @@
 //! and a wrapper like [`shift_click`]'s that takes the undo keys while the
 //! input it wraps is focused. A password box keeps no history, as in GTK.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ops::Deref;
 
@@ -64,12 +72,16 @@ use cosmic::iced::advanced::layout::{self, Layout};
 use cosmic::iced::advanced::renderer;
 use cosmic::iced::advanced::widget::{Operation, Tree, Widget, tree};
 use cosmic::iced::advanced::{Clipboard, Shell, mouse, overlay};
-use cosmic::iced::keyboard::{self, Key, Modifiers, key::Named};
+use cosmic::iced::keyboard::{self, Key, Modifiers, key::Named, key::Physical};
 use cosmic::iced::{Event, Length, Rectangle, Size, Vector};
 use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion, Position};
 
 /// The steps Ctrl+Z can go back
 pub const STEPS: usize = 300;
+
+/// The most text a box's history keeps, in bytes, the oldest steps going
+/// first: a long draft pasted again and again stays in bounds
+pub const BYTES: usize = 8 << 20;
 
 /// iced's text and caret, which a [`TextBox`] holds
 pub type Content = text_editor::Content<cosmic::Renderer>;
@@ -87,8 +99,10 @@ pub enum Action {
     DeleteWordBefore,
     /// The word after the caret deleted, or the selection (Ctrl+Delete)
     DeleteWordAfter,
-    /// Shift held as the box is clicked: the click that follows extends the
-    /// selection rather than placing the caret ([`shift_click`])
+    /// Shift was held for the click just done ([`shift_click`] sends it
+    /// straight after the click's own action): the selection runs from
+    /// where it began before the click to the caret, rather than the click
+    /// placing the caret or, quick after another click, selecting a word
     Extend,
 }
 
@@ -110,14 +124,32 @@ impl From<text_editor::Action> for Action {
     }
 }
 
+/// Where the caret goes when the app sets the text
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Caret {
+    /// At the start of the text
+    Start,
+    /// At its end, to go on typing
+    End,
+    /// Here, with this selection (kept inside the text)
+    At(Cursor),
+}
+
+/// A state a history keeps, and what it costs to keep
+trait Kept {
+    fn bytes(&self) -> usize;
+}
+
 /// The steps a box can go back and forward through: each the state before
 /// it (in `undo`) or after it (in `redo`). `S` is a box's whole state, so
 /// that going back is putting it back: a text editor's text and caret, a
-/// one-line box's value.
+/// one-line box's value. At most [`STEPS`] steps and [`BYTES`] bytes.
 #[derive(Debug)]
 struct History<S> {
     undo: VecDeque<S>,
     redo: Vec<S>,
+    /// What `undo` and `redo` hold, in bytes
+    bytes: usize,
 }
 
 impl<S> Default for History<S> {
@@ -125,23 +157,27 @@ impl<S> Default for History<S> {
         Self {
             undo: VecDeque::new(),
             redo: Vec::new(),
+            bytes: 0,
         }
     }
 }
 
-impl<S> History<S> {
+impl<S: Kept> History<S> {
     /// A step taken from `before`: what Redo would have brought back is gone
     fn record(&mut self, before: S) {
+        self.bytes -= self.redo.drain(..).map(|s| s.bytes()).sum::<usize>();
+        self.bytes += before.bytes();
         self.undo.push_back(before);
-        if self.undo.len() > STEPS {
-            self.undo.pop_front();
+        while self.undo.len() > STEPS || (self.bytes > BYTES && self.undo.len() > 1) {
+            let oldest = self.undo.pop_front().expect("a step");
+            self.bytes -= oldest.bytes();
         }
-        self.redo.clear();
     }
 
     /// The state before the last step, `now` kept for Redo
     fn undo(&mut self, now: S) -> Option<S> {
         let before = self.undo.pop_back()?;
+        self.bytes = self.bytes + now.bytes() - before.bytes();
         self.redo.push(now);
         Some(before)
     }
@@ -149,8 +185,14 @@ impl<S> History<S> {
     /// The state after the step last undone, `now` kept for Undo
     fn redo(&mut self, now: S) -> Option<S> {
         let after = self.redo.pop()?;
+        self.bytes = self.bytes + now.bytes() - after.bytes();
         self.undo.push_back(now);
         Some(after)
+    }
+
+    /// What Redo would have brought back is gone, the steps before kept
+    fn drop_redo(&mut self) {
+        self.bytes -= self.redo.drain(..).map(|s| s.bytes()).sum::<usize>();
     }
 }
 
@@ -177,26 +219,35 @@ impl Run {
     }
 }
 
-/// A text editor's whole state, to go back to
+/// A text editor's whole state, to go back to: its text, and its caret and
+/// selection with both ends as they are (a word or line selected by a
+/// double or triple click too)
 #[derive(Clone, Debug, PartialEq)]
 struct Snapshot {
     text: String,
     cursor: Cursor,
 }
 
+impl Kept for Snapshot {
+    fn bytes(&self) -> usize {
+        self.text.len()
+    }
+}
+
 /// A text box's text and caret, with its undo history; see the module's
 /// description. It derefs to iced's [`Content`], for the editor widget and
-/// for reading; changes go through [`perform`](Self::perform) and
-/// [`replace`](Self::replace).
+/// for reading; changes go through [`perform`](Self::perform),
+/// [`replace`](Self::replace) and [`amend`](Self::amend), or a new box
+/// ([`starting_with`](Self::starting_with)).
 #[derive(Default)]
 pub struct TextBox {
     content: Content,
     history: History<Snapshot>,
     /// The run of typing or deleting going on, if any
     run: Option<Run>,
-    /// Where a Shift+click extends the selection from: the anchor when the
-    /// press was announced ([`Action::Extend`])
-    anchor: Option<Position>,
+    /// Where the selection began before the click just done, for its
+    /// [`Action::Extend`]; only ever the last action's
+    clicked_from: Option<Position>,
 }
 
 impl Deref for TextBox {
@@ -224,13 +275,12 @@ impl TextBox {
         Self::default()
     }
 
-    /// A box holding `text`, the caret at its start (as iced's
-    /// `Content::with_text`), with nothing to undo
-    pub fn with_text(text: &str) -> Self {
-        Self {
-            content: Content::with_text(text),
-            ..Self::default()
-        }
+    /// A box starting with `text`, the caret at `caret`, with nothing to
+    /// undo: a draft opened, or a new one
+    pub fn starting_with(text: &str, caret: Caret) -> Self {
+        let mut text_box = Self::default();
+        text_box.set(text, caret);
+        text_box
     }
 
     /// Whether Undo would change anything
@@ -243,22 +293,27 @@ impl TextBox {
         !self.history.redo.is_empty()
     }
 
-    /// The text replaced by the app, the caret at its end: one step, which
+    /// The text replaced by the app, the caret at `caret`: one step, which
     /// Undo takes back
-    pub fn replace(&mut self, text: &str) {
-        self.change(|content| {
-            *content = Content::with_text(text);
-            content.perform(text_editor::Action::Move(Motion::DocumentEnd));
-        });
-        // Even when the text is the same, the caret is at its end
-        self.content
-            .perform(text_editor::Action::Move(Motion::DocumentEnd));
-        self.run = None;
+    pub fn replace(&mut self, text: &str, caret: Caret) {
+        let before = self.snapshot();
+        self.set(text, caret);
+        if self.content.text() != before.text {
+            self.history.record(before);
+        }
+    }
+
+    /// The text replaced by the app as part of its last step, which Undo
+    /// takes back whole: a change made in steps of its own, as the saves of
+    /// a message open in another editor. What Redo had is gone
+    pub fn amend(&mut self, text: &str, caret: Caret) {
+        self.set(text, caret);
+        self.history.drop_redo();
     }
 
     /// Does `action`, keeping the history
     pub fn perform(&mut self, action: impl Into<Action>) {
-        let anchor = self.anchor.take();
+        let clicked_from = self.clicked_from.take();
         match action.into() {
             Action::Undo => {
                 if self.can_undo() {
@@ -276,9 +331,20 @@ impl TextBox {
             }
             Action::DeleteWordBefore => self.delete_word(Motion::WordLeft, Edit::Backspace),
             Action::DeleteWordAfter => self.delete_word(Motion::WordRight, Edit::Delete),
+            // From where the selection began to where the click put the
+            // caret: after a double or triple click, the caret was not
+            // moved, and the word or line it selected gives way
             Action::Extend => {
-                let cursor = self.content.cursor();
-                self.anchor = Some(cursor.selection.unwrap_or(cursor.position));
+                if let Some(from) = clicked_from {
+                    let position = self.content.cursor().position;
+                    self.content.perform(text_editor::Action::ClearSelection);
+                    if from != position {
+                        self.content.move_to(Cursor {
+                            position,
+                            selection: Some(from),
+                        });
+                    }
+                }
             }
             Action::Editor(text_editor::Action::Edit(edit)) => self.edit(edit),
             // A scroll leaves the caret where it is
@@ -287,24 +353,22 @@ impl TextBox {
             }
             Action::Editor(action) => {
                 self.run = None;
-                let click = matches!(action, text_editor::Action::Click(_));
+                let click = matches!(
+                    action,
+                    text_editor::Action::Click(_)
+                        | text_editor::Action::SelectWord
+                        | text_editor::Action::SelectLine
+                );
+                let from = click.then(|| self.selection_from());
                 self.content.perform(action);
-                // Shift+click: from the anchor to where the click put the
-                // caret
-                if click && let Some(anchor) = anchor {
-                    let position = self.content.cursor().position;
-                    self.content.move_to(Cursor {
-                        position,
-                        selection: Some(anchor),
-                    });
-                }
+                self.clicked_from = from;
             }
         }
     }
 
     /// An edit of iced's: part of the run going on, or a step of its own
     fn edit(&mut self, edit: Edit) {
-        let selected = self.content.selection().is_some();
+        let selected = self.content.cursor().selection.is_some();
         let run = match edit {
             Edit::Insert(c) => Some(Run::Typing {
                 space: c.is_whitespace(),
@@ -336,7 +400,7 @@ impl TextBox {
     /// a step of its own
     fn delete_word(&mut self, motion: Motion, edit: Edit) {
         self.run = None;
-        let selected = self.content.selection().is_some();
+        let selected = self.content.cursor().selection.is_some();
         self.change(|content| {
             if !selected {
                 content.perform(text_editor::Action::Select(motion));
@@ -346,39 +410,145 @@ impl TextBox {
     }
 
     /// `change` made as a step of its own, if it changes the text; whether
-    /// it did
+    /// it did. The text is read whole once, for the step; whether it
+    /// changed is told by the caret, the number of lines and the caret's
+    /// line, which every change of the text moves or changes
     fn change(&mut self, change: impl FnOnce(&mut Content)) -> bool {
         let before = self.snapshot();
+        let mark = self.mark();
         change(&mut self.content);
-        let changed = self.content.text() != before.text;
+        let changed = self.mark() != mark;
         if changed {
             self.history.record(before);
         }
         changed
     }
 
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            text: self.content.text(),
-            cursor: self.content.cursor(),
+    /// What a change of the text changes: see [`change`](Self::change)
+    fn mark(&self) -> (usize, Cursor, Option<String>) {
+        let cursor = self.content.cursor();
+        let line = self
+            .content
+            .line(cursor.position.line)
+            .map(|line| line.text.into_owned());
+        (self.content.line_count(), cursor, line)
+    }
+
+    /// The text set, the caret at `caret`; no step
+    fn set(&mut self, text: &str, caret: Caret) {
+        self.content = Content::with_text(text);
+        match caret {
+            Caret::Start => {}
+            Caret::End => self
+                .content
+                .perform(text_editor::Action::Move(Motion::DocumentEnd)),
+            Caret::At(cursor) => {
+                let cursor = Cursor {
+                    position: self.within(cursor.position),
+                    selection: cursor.selection.map(|at| self.within(at)),
+                };
+                self.content.move_to(cursor);
+            }
         }
+        self.run = None;
+        self.clicked_from = None;
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        let text = self.content.text();
+        let cursor = self.selection_ends(&text);
+        Snapshot { text, cursor }
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
-        self.content = Content::with_text(&snapshot.text);
-        self.content.move_to(snapshot.cursor);
-        self.run = None;
+        self.set(&snapshot.text, Caret::At(snapshot.cursor));
     }
+
+    /// Where the selection begins, or the caret if there is none: what a
+    /// Shift+click extends from
+    fn selection_from(&self) -> Position {
+        let cursor = self.selection_ends(&self.content.text());
+        cursor.selection.unwrap_or(cursor.position)
+    }
+
+    /// The caret and the selection's other end, as they are: iced reports a
+    /// word or line selection (a double or triple click) by the point
+    /// clicked, so its ends are found from the text it selects, which lies
+    /// round that point and the caret
+    fn selection_ends(&self, text: &str) -> Cursor {
+        let cursor = self.content.cursor();
+        let (Some(anchor), Some(selected)) = (cursor.selection, self.content.selection()) else {
+            return Cursor {
+                position: cursor.position,
+                selection: None,
+            };
+        };
+        let starts = line_starts(text);
+        let offset = |at: Position| starts[at.line.min(starts.len() - 1)] + at.column;
+        let (caret, anchor) = (offset(cursor.position), offset(anchor));
+        let (low, high) = (caret.min(anchor), caret.max(anchor));
+        // A plain selection: its ends are the caret and the anchor
+        if text.get(low..high) == Some(selected.as_str()) {
+            return cursor;
+        }
+        let Some(start) = text
+            .match_indices(selected.as_str())
+            .map(|(start, _)| start)
+            .find(|&start| start <= low && start + selected.len() >= high)
+        else {
+            return cursor;
+        };
+        let end = start + selected.len();
+        // The caret at the end the selection grew towards; at its end for
+        // a word or line just selected
+        let (caret, anchor) = if caret >= anchor {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        let position = |offset: usize| {
+            let line = starts.partition_point(|&start| start <= offset) - 1;
+            Position {
+                line,
+                column: offset - starts[line],
+            }
+        };
+        Cursor {
+            position: position(caret),
+            selection: Some(position(anchor)),
+        }
+    }
+
+    /// `at`, moved inside the text: on a line it has, at a character
+    /// boundary of that line
+    fn within(&self, at: Position) -> Position {
+        let line = at.line.min(self.content.line_count().saturating_sub(1));
+        let text = self
+            .content
+            .line(line)
+            .map(|line| line.text.into_owned())
+            .unwrap_or_default();
+        let mut column = at.column.min(text.len());
+        while !text.is_char_boundary(column) {
+            column -= 1;
+        }
+        Position { line, column }
+    }
+}
+
+/// Where each line of `text` starts, in bytes
+fn line_starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect()
 }
 
 /// What a key does to a box's history, as household rule 21c has it:
 /// Ctrl+Z undoes; Ctrl+Shift+Z, and Ctrl+Y as Cerea and Marginalium also
-/// have it, redo. Any keyboard layout: by the key's Latin letter
-fn history_key(
-    key: &Key,
-    physical: keyboard::key::Physical,
-    modifiers: Modifiers,
-) -> Option<Action> {
+/// have it, redo. Any keyboard layout: by the key's Latin letter. For a box
+/// that is given keys some other way than as a focused widget (the
+/// terminal's prompt, typed into while the conversation has the keys)
+pub fn history_key(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<Action> {
     if !modifiers.command() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -413,9 +583,10 @@ pub fn key_binding<M>(press: KeyPress, on_action: impl Fn(Action) -> M) -> Optio
 }
 
 /// `content`, a text editor or what wraps one, with Shift+click: a left
-/// press over it with Shift held publishes `extend`, the box's
-/// [`Action::Extend`], before the press itself, so that the click extends
-/// the selection rather than placing the caret
+/// press with Shift held is the editor's own click, then `extend`, the
+/// box's [`Action::Extend`], so that the click extends the selection. Only
+/// a press the editor acted on is extended (one that can be changed, or
+/// selected in)
 pub fn shift_click<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     extend: M,
@@ -491,15 +662,32 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
         viewport: &Rectangle,
     ) {
         let held = tree.state.downcast_mut::<Held>();
-        match event {
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => held.0 = *modifiers,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if held.0.shift() && cursor.is_over(layout.bounds()) =>
-            {
-                shell.publish(self.extend.clone());
+        let extends = match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                held.0 = *modifiers;
+                false
             }
-            _ => {}
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                held.0.shift() && cursor.is_over(layout.bounds())
+            }
+            _ => false,
+        };
+        if !extends {
+            self.content.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+            return;
         }
+        // The editor's own click first, then Extend, if it acted on it
+        let mut messages = Vec::new();
+        let mut own = Shell::new(&mut messages);
         self.content.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -507,9 +695,17 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
             cursor,
             renderer,
             clipboard,
-            shell,
+            &mut own,
             viewport,
         );
+        let acted = Cell::new(false);
+        shell.merge(own, |message| {
+            acted.set(true);
+            message
+        });
+        if acted.get() {
+            shell.publish(self.extend.clone());
+        }
     }
 
     fn draw(
@@ -580,5 +776,50 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
             renderer,
             dnd_rectangles,
         );
+    }
+}
+
+/// The history's bounds, on states that say their own size
+#[cfg(test)]
+mod history_tests {
+    use super::{BYTES, History, Kept, STEPS};
+
+    struct State(usize);
+
+    impl Kept for State {
+        fn bytes(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[test]
+    fn the_history_keeps_at_most_its_steps_and_bytes() {
+        let mut history = History::default();
+        for _ in 0..STEPS + 5 {
+            history.record(State(1));
+        }
+        assert_eq!(history.undo.len(), STEPS);
+        assert_eq!(history.bytes, STEPS);
+        // Big states: the oldest go first, the newest is always kept
+        let mut history = History::default();
+        for n in 1..=8 {
+            history.record(State(BYTES / 4 + n));
+        }
+        assert_eq!(history.undo.len(), 3);
+        assert_eq!(history.undo.front().map(|s| s.0), Some(BYTES / 4 + 6));
+        history.record(State(2 * BYTES));
+        assert_eq!(
+            history.undo.len(),
+            1,
+            "one step bigger than the bound is kept alone"
+        );
+        // Undo and Redo move bytes between the two, and a new step drops Redo
+        let mut history = History::default();
+        history.record(State(10));
+        let before = history.undo(State(20)).expect("a step");
+        assert_eq!((before.0, history.bytes), (10, 20));
+        history.record(State(5));
+        assert_eq!(history.bytes, 5);
+        assert!(history.redo.is_empty());
     }
 }
