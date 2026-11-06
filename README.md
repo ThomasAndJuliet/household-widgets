@@ -29,14 +29,16 @@ The text box: "You were asked to implement a input text box. This obviously incl
 
 | Call | Is |
 | --- | --- |
-| `TextBox::new()`, `TextBox::with_text(text)` | a box's text and caret with its undo history, nothing to undo yet; it derefs to iced's `Content`, so `text_editor(&text_box)`, `.text()`, `.selection()` |
+| `TextBox::new()`, `TextBox::starting_with(text, caret)` | a box's text and caret with its undo history, nothing to undo yet; it derefs to iced's `Content`, so `text_editor(&text_box)`, `.text()`, `.selection()`. `caret` is a `text_box::Caret`: `Start`, `End`, or `At(cursor)` |
 | `text_box.perform(action)` | does a `text_box::Action`: iced's own (`text_editor::Action` converts into it), `Undo`, `Redo`, `DeleteWordBefore`, `DeleteWordAfter`, `Extend` |
-| `text_box.replace(text)` | the app's change of the whole text: one step Ctrl+Z takes back, the caret at the end |
+| `text_box.replace(text, caret)` | the app's change of the whole text: one step Ctrl+Z takes back |
+| `text_box.amend(text, caret)` | the same change again, part of the last step (the saves of a text open in another editor) |
 | `text_box.can_undo()`, `text_box.can_redo()` | for a menu's Undo and Redo |
 | `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
+| `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
 | `text_box::shift_click(editor, extend)` | round the editor: Shift+click extends the selection |
 
-A new draft is a new `TextBox` (the terminal's prompt, once sent). One-line boxes (`text_input`) will get the same history over the value the app keeps, with a wrapper that takes the undo keys while the input is focused; a password box keeps none, as in GTK.
+A new draft is a new `TextBox` (the terminal's prompt, once sent). The history keeps 300 steps and at most 8 MB of text. One-line boxes (`text_input`) will get the same history over the value the app keeps, with a wrapper that takes the undo keys while the input is focused; a password box keeps none, as in GTK.
 
 ## Depending on it
 
