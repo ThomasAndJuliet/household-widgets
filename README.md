@@ -25,6 +25,19 @@ The muted switch, rule 6: a switch that is on uses the muted accent ("yes use th
 | `item.switch(on, message)`, `item.switch_maybe(on, message)` | libcosmic's `settings::item::builder(title).toggler(..)` and `.toggler_maybe(..)`, the whole row clickable; import `household_widgets::SwitchItem` |
 | `muted_colours(&theme)` | the muted accent and the colour of text and icons on it |
 
+The text box: "You were asked to implement a input text box. This obviously includes the usual functionality of such a box which includes ctrl + z" (Juliet, 6 Nov 2026). iced's `text_editor` with what it lacks: an undo history, Ctrl+Backspace and Ctrl+Delete, and Shift+click; iced already has the rest of the standard keys. Module `text_box`; its documentation has the steps Ctrl+Z goes back by.
+
+| Call | Is |
+| --- | --- |
+| `TextBox::new()`, `TextBox::with_text(text)` | a box's text and caret with its undo history, nothing to undo yet; it derefs to iced's `Content`, so `text_editor(&text_box)`, `.text()`, `.selection()` |
+| `text_box.perform(action)` | does a `text_box::Action`: iced's own (`text_editor::Action` converts into it), `Undo`, `Redo`, `DeleteWordBefore`, `DeleteWordAfter`, `Extend` |
+| `text_box.replace(text)` | the app's change of the whole text: one step Ctrl+Z takes back, the caret at the end |
+| `text_box.can_undo()`, `text_box.can_redo()` | for a menu's Undo and Redo |
+| `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
+| `text_box::shift_click(editor, extend)` | round the editor: Shift+click extends the selection |
+
+A new draft is a new `TextBox` (the terminal's prompt, once sent). One-line boxes (`text_input`) will get the same history over the value the app keeps, with a wrapper that takes the undo keys while the input is focused; a password box keeps none, as in GTK.
+
 ## Depending on it
 
 ```toml
