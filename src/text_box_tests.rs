@@ -298,6 +298,102 @@ fn the_standard_keys_include_undo_redo_and_deleting_a_word() {
     );
 }
 
+/// The key's Latin letter decides, not the key's place on the keyboard
+/// (rule 21c): QWERTZ has Z where QWERTY has Y, Dvorak has it elsewhere
+/// still, and a Cyrillic letter is read by the key it is on
+#[test]
+fn undo_and_redo_follow_the_latin_letter_on_any_layout() {
+    let ctrl = Modifiers::CTRL;
+    let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+    // QWERTZ: Z is on the physical Y key, and Y on the physical Z key
+    assert_eq!(bound(letter("z", Code::KeyY, ctrl)), Some(Action::Undo));
+    assert_eq!(bound(letter("Z", Code::KeyY, ctrl_shift)), Some(Action::Redo));
+    assert_eq!(bound(letter("y", Code::KeyZ, ctrl)), Some(Action::Redo));
+    // Dvorak: Z is on the physical Semicolon key
+    assert_eq!(bound(letter("z", Code::Semicolon, ctrl)), Some(Action::Undo));
+    // A Cyrillic letter on the keys of Z and Y: read by the key
+    assert_eq!(bound(letter("я", Code::KeyZ, ctrl)), Some(Action::Undo));
+    assert_eq!(bound(letter("н", Code::KeyY, ctrl)), Some(Action::Redo));
+    // ... and on a key that is neither, it is not undo
+    assert_ne!(bound(letter("я", Code::KeyQ, ctrl)), Some(Action::Undo));
+}
+
+/// Keys that are not Ctrl+Z: with Alt (AltGr is Ctrl+Alt on some systems),
+/// with the logo key, or Ctrl+Shift+Y; and Ctrl+Backspace with Shift or Alt
+/// is not a word's deletion
+#[test]
+fn near_misses_of_the_history_and_word_keys_are_not_them() {
+    let ctrl_alt = Modifiers::CTRL | Modifiers::ALT;
+    let ctrl_logo = Modifiers::CTRL | Modifiers::LOGO;
+    let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+    for modifiers in [ctrl_alt, ctrl_logo, Modifiers::LOGO, Modifiers::ALT] {
+        for (c, code) in [("z", Code::KeyZ), ("Z", Code::KeyZ), ("y", Code::KeyY)] {
+            let got = bound(letter(c, code, modifiers));
+            assert!(
+                !matches!(got, Some(Action::Undo | Action::Redo)),
+                "{c} with {modifiers:?} is {got:?}"
+            );
+        }
+    }
+    let got = bound(letter("y", Code::KeyY, ctrl_shift));
+    assert!(
+        !matches!(got, Some(Action::Undo | Action::Redo)),
+        "Ctrl+Shift+Y is {got:?}"
+    );
+    for modifiers in [ctrl_shift, ctrl_alt] {
+        for key in [Named::Backspace, Named::Delete] {
+            let got = bound(named(key, modifiers));
+            assert!(
+                !matches!(
+                    got,
+                    Some(Action::DeleteWordBefore | Action::DeleteWordAfter)
+                ),
+                "{key:?} with {modifiers:?} is {got:?}"
+            );
+        }
+    }
+}
+
+/// Deleting a word where there is none to delete (before the start, after
+/// the end) changes nothing and is no step, so that Ctrl+Z still goes back
+/// to the typing before it
+#[test]
+fn deleting_a_word_past_either_end_is_no_step() {
+    let mut text_box = TextBox::with_text("abc");
+    text_box.perform(Action::DeleteWordBefore);
+    assert_eq!(text_box.text(), "abc");
+    assert!(!text_box.can_undo(), "nothing before the start was a step");
+    text_box.perform(text_editor::Action::Move(Motion::DocumentEnd));
+    text_box.perform(Action::DeleteWordAfter);
+    assert_eq!(text_box.text(), "abc");
+    assert!(!text_box.can_undo(), "nothing after the end was a step");
+    // Typing before and after them is still one step
+    let mut typed_box = TextBox::new();
+    typed(&mut typed_box, "abc");
+    typed_box.perform(text_editor::Action::Move(Motion::DocumentStart));
+    typed_box.perform(Action::DeleteWordBefore);
+    typed_box.perform(text_editor::Action::Move(Motion::DocumentEnd));
+    typed_box.perform(Action::DeleteWordAfter);
+    assert_eq!(undone(&mut typed_box), [""]);
+}
+
+/// A word deleted at the start of a line takes the line break and goes
+/// back in one step
+#[test]
+fn deleting_a_word_at_a_line_start_is_one_step() {
+    let mut text_box = TextBox::with_text("first line\nsecond");
+    text_box.perform(text_editor::Action::Move(Motion::DocumentEnd));
+    text_box.perform(text_editor::Action::Move(Motion::Home));
+    assert_eq!(text_box.cursor().position, at(1, 0));
+    text_box.perform(Action::DeleteWordBefore);
+    let text = text_box.text();
+    assert!(
+        !text.contains('\n') && text.starts_with("first") && text.ends_with("second"),
+        "{text:?}"
+    );
+    assert_eq!(undone(&mut text_box), ["first line\nsecond"]);
+}
+
 #[test]
 fn an_unfocused_box_takes_no_key() {
     let unfocused = press(
