@@ -14,9 +14,9 @@ use cosmic::iced::runtime::user_interface::{Cache, UserInterface};
 use cosmic::iced::{Event, Font, Pixels, Point, Size, mouse};
 use cosmic::widget::text_editor::{self, Binding, Edit, KeyPress, Motion, Position, Status};
 
-use crate::text_box::{Action, Caret, STEPS, TextBox, history_key, key_binding, shift_click};
+use crate::text_box::{Action, Caret, STEPS, TextBox, Turn, history_key, key_binding, shift_click};
 
-fn typed(text_box: &mut TextBox, text: &str) {
+fn typed<P: Clone>(text_box: &mut TextBox<P>, text: &str) {
     for c in text.chars() {
         let edit = if c == '\n' {
             Edit::Enter
@@ -27,16 +27,16 @@ fn typed(text_box: &mut TextBox, text: &str) {
     }
 }
 
-fn edit(text_box: &mut TextBox, edit: Edit) {
+fn edit<P: Clone>(text_box: &mut TextBox<P>, edit: Edit) {
     text_box.perform(text_editor::Action::Edit(edit));
 }
 
-fn paste(text_box: &mut TextBox, text: &str) {
+fn paste<P: Clone>(text_box: &mut TextBox<P>, text: &str) {
     edit(text_box, Edit::Paste(Arc::new(text.to_string())));
 }
 
 /// Undo pressed until nothing is left: the text after each
-fn undone(text_box: &mut TextBox) -> Vec<String> {
+fn undone<P: Clone>(text_box: &mut TextBox<P>) -> Vec<String> {
     let mut texts = Vec::new();
     while text_box.can_undo() {
         text_box.perform(Action::Undo);
@@ -51,7 +51,7 @@ fn at(line: usize, column: usize) -> Position {
 
 #[test]
 fn a_run_of_typing_is_one_step_and_a_space_after_a_word_starts_the_next() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     assert!(!text_box.can_undo() && !text_box.can_redo());
     typed(&mut text_box, "hello  world\nagain");
     assert_eq!(undone(&mut text_box), ["hello  world", "hello", ""]);
@@ -64,7 +64,7 @@ fn a_run_of_typing_is_one_step_and_a_space_after_a_word_starts_the_next() {
 
 #[test]
 fn moving_the_caret_or_changing_between_typing_and_deleting_ends_a_step() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     typed(&mut text_box, "abd");
     text_box.perform(text_editor::Action::Move(Motion::Left));
     typed(&mut text_box, "c");
@@ -77,7 +77,7 @@ fn moving_the_caret_or_changing_between_typing_and_deleting_ends_a_step() {
 
 #[test]
 fn undo_puts_back_the_caret_and_the_selection() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     typed(&mut text_box, "abd");
     text_box.perform(text_editor::Action::Move(Motion::Left));
     typed(&mut text_box, "c");
@@ -88,7 +88,7 @@ fn undo_puts_back_the_caret_and_the_selection() {
         "where the caret was before the step"
     );
 
-    let mut text_box = TextBox::starting_with("hello world", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("hello world", Caret::Start);
     text_box.perform(text_editor::Action::SelectAll);
     let selected = text_box.cursor();
     edit(&mut text_box, Edit::Backspace);
@@ -101,7 +101,7 @@ fn undo_puts_back_the_caret_and_the_selection() {
 
 #[test]
 fn a_paste_a_cut_and_deleting_a_selection_are_a_step_each() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     typed(&mut text_box, "ab");
     paste(&mut text_box, "XY");
     typed(&mut text_box, "c");
@@ -116,7 +116,7 @@ fn a_paste_a_cut_and_deleting_a_selection_are_a_step_each() {
 
 #[test]
 fn typing_over_a_selection_is_one_step_with_the_typing_after_it() {
-    let mut text_box = TextBox::starting_with("old", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("old", Caret::Start);
     text_box.perform(text_editor::Action::SelectAll);
     typed(&mut text_box, "new");
     assert_eq!(undone(&mut text_box), ["old"]);
@@ -124,7 +124,7 @@ fn typing_over_a_selection_is_one_step_with_the_typing_after_it() {
 
 #[test]
 fn a_key_that_changes_nothing_is_no_step_and_joins_none() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     edit(&mut text_box, Edit::Backspace);
     assert!(!text_box.can_undo());
     typed(&mut text_box, "a");
@@ -136,14 +136,14 @@ fn a_key_that_changes_nothing_is_no_step_and_joins_none() {
 
 #[test]
 fn a_replacement_is_one_step_with_the_caret_at_its_end() {
-    let mut text_box = TextBox::starting_with("draft", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("draft", Caret::Start);
     assert!(!text_box.can_undo(), "a new box has nothing to undo");
     text_box.replace("/help ", Caret::End);
     assert_eq!(text_box.cursor().position, at(0, 6));
     typed(&mut text_box, "me");
     assert_eq!(undone(&mut text_box), ["/help ", "draft"]);
     // The same text again: no step, the caret still put at the end
-    let mut text_box = TextBox::starting_with("same", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("same", Caret::Start);
     text_box.replace("same", Caret::End);
     assert!(!text_box.can_undo());
     assert_eq!(text_box.cursor().position, at(0, 4));
@@ -151,7 +151,7 @@ fn a_replacement_is_one_step_with_the_caret_at_its_end() {
 
 #[test]
 fn typing_after_undo_drops_the_steps_redo_had() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     typed(&mut text_box, "one two");
     text_box.perform(Action::Undo);
     assert!(text_box.can_redo());
@@ -168,7 +168,7 @@ fn typing_after_undo_drops_the_steps_redo_had() {
 
 #[test]
 fn the_history_keeps_the_last_steps() {
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     for _ in 0..STEPS + 20 {
         paste(&mut text_box, "x");
     }
@@ -179,7 +179,7 @@ fn the_history_keeps_the_last_steps() {
 
 #[test]
 fn a_word_is_deleted_as_one_step_or_the_selection_if_there_is_one() {
-    let mut text_box = TextBox::starting_with("hello big world", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("hello big world", Caret::Start);
     text_box.perform(text_editor::Action::Move(Motion::DocumentEnd));
     text_box.perform(Action::DeleteWordBefore);
     assert_eq!(text_box.text(), "hello big ");
@@ -365,7 +365,7 @@ fn near_misses_of_the_history_and_word_keys_are_not_them() {
 /// to the typing before it
 #[test]
 fn deleting_a_word_past_either_end_is_no_step() {
-    let mut text_box = TextBox::starting_with("abc", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("abc", Caret::Start);
     text_box.perform(Action::DeleteWordBefore);
     assert_eq!(text_box.text(), "abc");
     assert!(!text_box.can_undo(), "nothing before the start was a step");
@@ -374,7 +374,7 @@ fn deleting_a_word_past_either_end_is_no_step() {
     assert_eq!(text_box.text(), "abc");
     assert!(!text_box.can_undo(), "nothing after the end was a step");
     // Typing before and after them is still one step
-    let mut typed_box = TextBox::new();
+    let mut typed_box: TextBox = TextBox::new();
     typed(&mut typed_box, "abc");
     typed_box.perform(text_editor::Action::Move(Motion::DocumentStart));
     typed_box.perform(Action::DeleteWordBefore);
@@ -387,7 +387,7 @@ fn deleting_a_word_past_either_end_is_no_step() {
 /// back in one step
 #[test]
 fn deleting_a_word_at_a_line_start_is_one_step() {
-    let mut text_box = TextBox::starting_with("first line\nsecond", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("first line\nsecond", Caret::Start);
     text_box.perform(text_editor::Action::Move(Motion::DocumentEnd));
     text_box.perform(text_editor::Action::Move(Motion::Home));
     assert_eq!(text_box.cursor().position, at(1, 0));
@@ -457,7 +457,7 @@ fn through(text_box: &TextBox, events: &[Event], at: Point) -> Vec<Action> {
 
 #[test]
 fn shift_click_extends_the_selection_from_where_it_was() {
-    let mut text_box = TextBox::starting_with("hello world", Caret::Start);
+    let mut text_box: TextBox = TextBox::starting_with("hello world", Caret::Start);
     let left = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
     let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
     let shift = |modifiers| Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers));
@@ -519,7 +519,7 @@ fn shift_click_extends_the_selection_from_where_it_was() {
 /// extended, from where it began to the caret
 #[test]
 fn shift_click_quick_after_a_click_still_extends() {
-    let mut text_box = TextBox::starting_with("hello world", Caret::End);
+    let mut text_box: TextBox = TextBox::starting_with("hello world", Caret::End);
     let left = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
     let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
     let shift = Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::SHIFT));
@@ -560,7 +560,7 @@ fn shift_click_quick_after_a_click_still_extends() {
 /// came between
 #[test]
 fn an_extend_acts_only_on_the_click_just_done() {
-    let text_box = TextBox::starting_with("hello world", Caret::Start);
+    let text_box: TextBox = TextBox::starting_with("hello world", Caret::Start);
     let mut renderer = cosmic::iced::futures::executor::block_on(
         <cosmic::Renderer as Headless>::new(Font::default(), Pixels(14.0), Some("tiny-skia")),
     )
@@ -588,7 +588,7 @@ fn an_extend_acts_only_on_the_click_just_done() {
     assert!(said.is_empty(), "a read-only box: {said:?}");
     drop(ui);
 
-    let mut text_box = TextBox::starting_with("hello world", Caret::End);
+    let mut text_box: TextBox = TextBox::starting_with("hello world", Caret::End);
     text_box.perform(Action::Extend);
     assert!(text_box.cursor().selection.is_none(), "no click before it");
     text_box.perform(text_editor::Action::Click(Point::new(8.0, 10.0)));
@@ -605,7 +605,7 @@ fn undo_puts_back_a_word_or_line_selection() {
         (text_editor::Action::SelectWord, "brown"),
         (text_editor::Action::SelectLine, "the brown fox"),
     ] {
-        let mut text_box = TextBox::starting_with("the brown fox\nnext", Caret::Start);
+        let mut text_box: TextBox = TextBox::starting_with("the brown fox\nnext", Caret::Start);
         for _ in 0..6 {
             text_box.perform(text_editor::Action::Move(Motion::Right));
         }
@@ -627,7 +627,7 @@ fn undo_puts_back_a_word_or_line_selection() {
 /// back to before the first
 #[test]
 fn an_amended_change_is_one_step() {
-    let mut text_box = TextBox::starting_with("draft", Caret::End);
+    let mut text_box: TextBox = TextBox::starting_with("draft", Caret::End);
     text_box.replace("draft, saved once", Caret::End);
     text_box.amend("draft, saved twice", Caret::End);
     text_box.amend("draft, saved three times", Caret::End);
@@ -639,15 +639,15 @@ fn an_amended_change_is_one_step() {
 /// Where the app puts the caret is where it goes, inside the text
 #[test]
 fn the_caret_goes_where_the_app_says() {
-    let start = TextBox::starting_with("one\ntwo", Caret::Start);
+    let start: TextBox = TextBox::starting_with("one\ntwo", Caret::Start);
     assert_eq!(start.cursor().position, at(0, 0));
-    let end = TextBox::starting_with("one\ntwo", Caret::End);
+    let end: TextBox = TextBox::starting_with("one\ntwo", Caret::End);
     assert_eq!(end.cursor().position, at(1, 3));
     let cursor = text_editor::Cursor {
         position: at(0, 2),
         selection: Some(at(1, 1)),
     };
-    let mut text_box = TextBox::new();
+    let mut text_box: TextBox = TextBox::new();
     text_box.replace("one\ntwo", Caret::At(cursor));
     assert_eq!(text_box.cursor(), cursor);
     // Past the text: at its end, and inside a character
@@ -656,7 +656,7 @@ fn the_caret_goes_where_the_app_says() {
         selection: None,
     };
     assert_eq!(
-        TextBox::starting_with("é", Caret::At(far))
+        TextBox::<()>::starting_with("é", Caret::At(far))
             .cursor()
             .position,
         at(0, 2)
@@ -666,7 +666,7 @@ fn the_caret_goes_where_the_app_says() {
         selection: None,
     };
     assert_eq!(
-        TextBox::starting_with("é", Caret::At(inside))
+        TextBox::<()>::starting_with("é", Caret::At(inside))
             .cursor()
             .position,
         at(0, 0)
@@ -693,4 +693,42 @@ fn the_history_keys_are_shared() {
         history_key(&z, Physical::Code(Code::KeyZ), Modifiers::empty()),
         None
     );
+}
+
+/// A step with the app's own part (a card stashed with the text): Undo
+/// and Redo hand the part back for the app to undo or redo its side; a
+/// part that can no longer be undone ends the history there
+#[test]
+fn a_step_with_the_apps_part_hands_it_back() {
+    let mut text_box: TextBox<&str> = TextBox::starting_with("a prompt", Caret::End);
+    typed(&mut text_box, "!");
+    text_box.replace_with("", Caret::Start, "stashed");
+    // Always a step, the text changed or not
+    text_box.replace_with("", Caret::Start, "nothing to the text");
+    assert_eq!(text_box.undo_part(), Some(&"nothing to the text"));
+    assert_eq!(
+        text_box.perform(Action::Undo),
+        Some(Turn::Undone("nothing to the text"))
+    );
+    assert_eq!(
+        text_box.perform(Action::Undo),
+        Some(Turn::Undone("stashed"))
+    );
+    assert_eq!(text_box.text(), "a prompt!");
+    assert_eq!(text_box.redo_part(), Some(&"stashed"));
+    assert_eq!(
+        text_box.perform(Action::Redo),
+        Some(Turn::Redone("stashed"))
+    );
+    assert_eq!(text_box.text(), "");
+    // A step of the text alone hands nothing back
+    text_box.perform(Action::Undo);
+    assert_eq!(text_box.perform(Action::Undo), None);
+    assert_eq!(text_box.text(), "a prompt");
+    text_box.perform(Action::Redo);
+    text_box.forget_redo();
+    assert!(!text_box.can_redo());
+    text_box.forget_undo();
+    assert!(!text_box.can_undo());
+    assert_eq!(text_box.text(), "a prompt!");
 }
