@@ -73,7 +73,7 @@ use cosmic::iced::advanced::renderer;
 use cosmic::iced::advanced::widget::{Operation, Tree, Widget, tree};
 use cosmic::iced::advanced::{Clipboard, Shell, mouse, overlay};
 use cosmic::iced::keyboard::{self, Key, Modifiers, key::Named, key::Physical};
-use cosmic::iced::{Event, Length, Rectangle, Size, Vector};
+use cosmic::iced::{Event, Length, Point, Rectangle, Size, Vector};
 use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion, Position};
 
 /// The steps Ctrl+Z can go back
@@ -227,13 +227,23 @@ impl Run {
     }
 }
 
-/// A text editor's whole state, to go back to: its text, and its caret and
-/// selection with both ends as they are (a word or line selected by a
-/// double or triple click too)
+/// A text editor's whole state, to go back to: its text, its caret and
+/// selection, and how it selects (a word or line selected by a double or
+/// triple click is put back as one, not as the point clicked)
 #[derive(Clone, Debug, PartialEq)]
 struct Snapshot {
     text: String,
     cursor: Cursor,
+    selecting: Selecting,
+}
+
+/// How a selection was made: iced's editor keeps a double or triple
+/// click's as the point clicked, which selects the words or lines round it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Selecting {
+    Plain,
+    Words,
+    Lines,
 }
 
 impl Kept for Snapshot {
@@ -263,8 +273,12 @@ pub struct TextBox<P = ()> {
     /// The run of typing or deleting going on, if any
     run: Option<Run>,
     /// Where the selection began before the click just done, for its
-    /// [`Action::Extend`]; only ever the last action's
-    clicked_from: Option<Position>,
+    /// [`Action::Extend`], and whether iced took the click for a double or
+    /// triple one; only ever the last action's
+    clicked_from: Option<(Position, bool)>,
+    /// Where the last single click was, in the editor: a double or triple
+    /// click is one near it, which iced does not place
+    last_click: Option<Point>,
 }
 
 impl<P> Default for TextBox<P> {
@@ -274,6 +288,7 @@ impl<P> Default for TextBox<P> {
             history: History::default(),
             run: None,
             clicked_from: None,
+            last_click: None,
         }
     }
 }
@@ -406,7 +421,12 @@ impl<P: Clone> TextBox<P> {
             // caret: after a double or triple click, the caret was not
             // moved, and the word or line it selected gives way
             Action::Extend => {
-                if let Some(from) = clicked_from {
+                if let Some((from, again)) = clicked_from {
+                    // A double or triple click left the caret where it was:
+                    // it goes where the click was, as a single click's
+                    if again && let Some(at) = self.last_click {
+                        self.content.perform(text_editor::Action::Click(at));
+                    }
                     let position = self.content.cursor().position;
                     self.content.perform(text_editor::Action::ClearSelection);
                     if from != position {
@@ -424,13 +444,15 @@ impl<P: Clone> TextBox<P> {
             }
             Action::Editor(action) => {
                 self.run = None;
-                let click = matches!(
-                    action,
-                    text_editor::Action::Click(_)
-                        | text_editor::Action::SelectWord
-                        | text_editor::Action::SelectLine
-                );
-                let from = click.then(|| self.selection_from());
+                let clicked = match action {
+                    text_editor::Action::Click(at) => {
+                        self.last_click = Some(at);
+                        Some(false)
+                    }
+                    text_editor::Action::SelectWord | text_editor::Action::SelectLine => Some(true),
+                    _ => None,
+                };
+                let from = clicked.map(|again| (self.selection_from(), again));
                 self.content.perform(action);
                 self.clicked_from = from;
             }
@@ -528,12 +550,64 @@ impl<P: Clone> TextBox<P> {
 
     fn snapshot(&self) -> Snapshot {
         let text = self.content.text();
-        let cursor = self.selection_ends(&text);
-        Snapshot { text, cursor }
+        let cursor = self.content.cursor();
+        let selecting = self.selecting(&text, cursor);
+        Snapshot {
+            text,
+            cursor,
+            selecting,
+        }
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
-        self.set(&snapshot.text, Caret::At(snapshot.cursor));
+        let Snapshot {
+            text,
+            cursor,
+            selecting,
+        } = snapshot;
+        let (anchor, select) = match (cursor.selection, selecting) {
+            (Some(anchor), Selecting::Words) => (anchor, text_editor::Action::SelectWord),
+            (Some(anchor), Selecting::Lines) => (anchor, text_editor::Action::SelectLine),
+            _ => return self.set(&text, Caret::At(cursor)),
+        };
+        // Selected as it was: from the point clicked, the caret where it was
+        self.set(
+            &text,
+            Caret::At(Cursor {
+                position: anchor,
+                selection: None,
+            }),
+        );
+        self.content.perform(select);
+        self.content.move_to(Cursor {
+            position: cursor.position,
+            selection: None,
+        });
+    }
+
+    /// How the selection of `cursor` in `text` was made: by its ends, or a
+    /// double or triple click's
+    fn selecting(&self, text: &str, cursor: Cursor) -> Selecting {
+        let (Some(anchor), Some(selected)) = (cursor.selection, self.content.selection()) else {
+            return Selecting::Plain;
+        };
+        let starts = line_starts(text);
+        let offset = |at: Position| starts[at.line.min(starts.len() - 1)] + at.column;
+        let (caret, anchor_at) = (offset(cursor.position), offset(anchor));
+        if text.get(caret.min(anchor_at)..caret.max(anchor_at)) == Some(selected.as_str()) {
+            return Selecting::Plain;
+        }
+        let (first, last) = (
+            cursor.position.line.min(anchor.line),
+            cursor.position.line.max(anchor.line),
+        );
+        let lines: Vec<&str> = text.split('\n').collect();
+        let whole = lines.get(first..=last).map(|lines| lines.join("\n"));
+        if whole.as_deref() == Some(selected.trim_end_matches('\n')) {
+            Selecting::Lines
+        } else {
+            Selecting::Words
+        }
     }
 
     /// Where the selection begins, or the caret if there is none: what a
