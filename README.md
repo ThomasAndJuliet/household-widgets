@@ -36,6 +36,14 @@ so its palette and any faded-window state remain under its control. `Level<M>`
 aligns a settings-row control with the first two text lines; its body-line
 callback is read during layout, so a changed interface size takes effect.
 
+`menu::Menu<M>` holds resolved menu rows, with app messages, icon handles,
+shortcuts, marks and disabled reasons. The app supplies bundled mark icons and
+its body-text constructor in `MenuStyle` when converting the menu into native
+trees. `width()` includes submenus; `map()` adapts messages without rebuilding
+menu metadata. `MenuRow` also supplies the row contents and measured width
+for native menu-bar adapters; `measured_width` shares its bounded shaping cache
+with other interface text at any size and font.
+
 ## Depending on it
 
 ```toml
