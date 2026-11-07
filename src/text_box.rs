@@ -447,6 +447,11 @@ impl<P: Clone> TextBox<P> {
                     }
                 }
             }
+            // iced's editor clears its selection when it loses the focus (a
+            // menu opened, another widget clicked): a text box keeps it, as
+            // in GTK and the browsers, for the menu's Cut and Copy and for
+            // when the focus comes back
+            Action::Editor(text_editor::Action::ClearSelection) => self.run = None,
             Action::Editor(text_editor::Action::Edit(edit)) => self.edit(edit),
             // A scroll leaves the caret where it is
             Action::Editor(scroll @ text_editor::Action::Scroll { .. }) => {
