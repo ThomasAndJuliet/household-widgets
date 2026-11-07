@@ -45,11 +45,11 @@ pub fn first_lines(
 pub struct Level<'a, M> {
     content: Element<'a, M>,
     text_first: bool,
-    body_line: f32,
+    body_line: fn() -> f32,
 }
 
 impl<'a, M> Level<'a, M> {
-    pub fn new(content: impl Into<Element<'a, M>>, body_line: f32) -> Self {
+    pub fn new(content: impl Into<Element<'a, M>>, body_line: fn() -> f32) -> Self {
         Self {
             content: content.into(),
             text_first: false,
@@ -115,10 +115,10 @@ mod widget_impl {
                         label.height,
                         gap,
                         Some(description.height),
-                        self.body_line,
+                        (self.body_line)(),
                     )
                 }
-                _ => first_lines(LEVEL_CAP, text.height, 0.0, None, self.body_line),
+                _ => first_lines(LEVEL_CAP, text.height, 0.0, None, (self.body_line)()),
             };
             let band = first.min(text.height).max(control.height);
             children[n - 1].move_to_mut(Point::new(control.x, (band - control.height) / 2.0));
