@@ -25,6 +25,17 @@ The muted switch, rule 6: a switch that is on uses the muted accent ("yes use th
 | `item.switch(on, message)`, `item.switch_maybe(on, message)` | libcosmic's `settings::item::builder(title).toggler(..)` and `.toggler_maybe(..)`, the whole row clickable; import `household_widgets::SwitchItem` |
 | `muted_colours(&theme)` | the muted accent and the colour of text and icons on it |
 
+The shared tooltip functions own the 320 px wrap limit, theme spacing, bounded
+bubble, cursor-following link bubble, and stable widget shape when a bubble is
+hidden. An app supplies its body-text element to `tooltip_with`, and can use
+`tooltip_unless` when a menu or list covers the bubble.
+
+`TextButton<M>` and `Tertiary<M>` own the text, icon, row and button layout for
+the household's three button levels. An app passes its `theme::Button` class,
+so its palette and any faded-window state remain under its control. `Level<M>`
+aligns a settings-row control with the first two text lines; its body-line
+callback is read during layout, so a changed interface size takes effect.
+
 ## Depending on it
 
 ```toml
