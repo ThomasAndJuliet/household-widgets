@@ -407,69 +407,102 @@ const VIEWPORT: Rectangle = Rectangle {
 };
 const POINT: cosmic::iced::Point = cosmic::iced::Point::new(30.0, 12.0);
 
-fn source_event<W: Widget<Message, Theme, Renderer> + TextMenuTarget<Message>>(
-    menu: &mut TextMenu<W, Message>,
-    tree: &mut Tree,
-    renderer: &Renderer,
-    board: &mut Board,
-    event: Event,
-    at: cosmic::iced::Point,
-) -> Vec<Message> {
-    // UserInterface::build reconciles the widget before layout and update.
-    // The native input populates its tracked value during that reconciliation.
-    menu.diff(tree);
-    let node = menu.layout(
-        tree,
-        renderer,
-        &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
-    );
-    let mut messages = Vec::new();
-    let mut shell = Shell::new(&mut messages);
-    menu.update(
-        tree,
-        &event,
-        Layout::new(&node),
-        mouse::Cursor::Available(at),
-        renderer,
-        board,
-        &mut shell,
-        &VIEWPORT,
-    );
-    messages
+// A target and its retained state, sharing the renderer and clipboard supplied
+// by each test. Two harnesses can therefore model independent sources in one window.
+struct Harness<W> {
+    menu: TextMenu<W, Message>,
+    tree: Tree,
 }
-fn press<W: Widget<Message, Theme, Renderer> + TextMenuTarget<Message>>(
-    menu: &mut TextMenu<W, Message>,
-    tree: &mut Tree,
-    renderer: &Renderer,
-    board: &mut Board,
-) {
-    let messages = source_event(
-        menu,
-        tree,
-        renderer,
-        board,
-        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
-        POINT,
-    );
-    assert!(messages.is_empty());
+impl<W: Widget<Message, Theme, Renderer> + TextMenuTarget<Message>> Harness<W> {
+    fn new(menu: TextMenu<W, Message>) -> Self {
+        let tree = tree(&menu);
+        Self { menu, tree }
+    }
+    fn target(target: W) -> Self {
+        Self::new(text_menu(target, &words(), style()).window_id(window::Id::NONE))
+    }
+    fn event(
+        &mut self,
+        renderer: &Renderer,
+        board: &mut Board,
+        event: Event,
+        at: cosmic::iced::Point,
+    ) -> Vec<Message> {
+        // UserInterface::build reconciles before layout; the native input
+        // initializes its tracked value during that reconciliation.
+        self.menu.diff(&mut self.tree);
+        let node = self.menu.layout(
+            &mut self.tree,
+            renderer,
+            &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
+        );
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        self.menu.update(
+            &mut self.tree,
+            &event,
+            Layout::new(&node),
+            mouse::Cursor::Available(at),
+            renderer,
+            board,
+            &mut shell,
+            &VIEWPORT,
+        );
+        messages
+    }
+    fn press(&mut self, renderer: &Renderer, board: &mut Board) {
+        assert!(
+            self.event(
+                renderer,
+                board,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                POINT
+            )
+            .is_empty()
+        );
+    }
+    fn choose(&mut self, renderer: &Renderer, board: &mut Board, row: usize) {
+        let node = self.menu.layout(
+            &mut self.tree,
+            renderer,
+            &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
+        );
+        let mut overlay = self
+            .menu
+            .overlay(
+                &mut self.tree,
+                Layout::new(&node),
+                renderer,
+                &VIEWPORT,
+                Vector::ZERO,
+            )
+            .expect("open menu");
+        let menu_node = overlay.as_overlay_mut().layout(renderer, VIEWPORT.size());
+        let at = row_center(&menu_node, row);
+        let mut messages = Vec::new();
+        for event in [
+            mouse::Event::CursorMoved { position: at },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            let mut shell = Shell::new(&mut messages);
+            overlay.as_overlay_mut().update(
+                &Event::Mouse(event),
+                Layout::new(&menu_node),
+                mouse::Cursor::Available(at),
+                renderer,
+                board,
+                &mut shell,
+            );
+        }
+        assert!(
+            messages.is_empty(),
+            "overlay routes commands through its source"
+        );
+    }
 }
-fn choose<W: Widget<Message, Theme, Renderer> + TextMenuTarget<Message>>(
-    menu: &mut TextMenu<W, Message>,
-    tree: &mut Tree,
-    renderer: &Renderer,
-    board: &mut Board,
-    row: usize,
-) {
-    let node = menu.layout(
-        tree,
-        renderer,
-        &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
-    );
-    let mut overlay = menu
-        .overlay(tree, Layout::new(&node), renderer, &VIEWPORT, Vector::ZERO)
-        .expect("open menu");
-    let menu_node = overlay.as_overlay_mut().layout(renderer, VIEWPORT.size());
-    let at = Layout::new(&menu_node)
+fn row_center(node: &layout::Node, row: usize) -> cosmic::iced::Point {
+    Layout::new(node)
         .children()
         .next()
         .expect("menu")
@@ -477,27 +510,32 @@ fn choose<W: Widget<Message, Theme, Renderer> + TextMenuTarget<Message>>(
         .nth(row)
         .expect("row")
         .bounds()
-        .center();
+        .center()
+}
+fn hover_reason(
+    overlay: &mut overlay::Element<'_, Message, Theme, Renderer>,
+    node: &layout::Node,
+    renderer: &Renderer,
+    board: &mut Board,
+) -> mouse::Cursor {
+    let at = row_center(node, 2);
+    let cursor = mouse::Cursor::Available(at);
     let mut messages = Vec::new();
+    let mut shell = Shell::new(&mut messages);
     for event in [
-        mouse::Event::CursorMoved { position: at },
-        mouse::Event::ButtonPressed(mouse::Button::Left),
-        mouse::Event::ButtonReleased(mouse::Button::Left),
+        Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        redraw(),
     ] {
-        let mut shell = Shell::new(&mut messages);
         overlay.as_overlay_mut().update(
-            &Event::Mouse(event),
-            Layout::new(&menu_node),
-            mouse::Cursor::Available(at),
+            &event,
+            Layout::new(node),
+            cursor,
             renderer,
             board,
             &mut shell,
         );
     }
-    assert!(
-        messages.is_empty(),
-        "overlay routes commands through its source"
-    );
+    cursor
 }
 fn redraw() -> Event {
     Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))
@@ -512,17 +550,14 @@ fn overlay_paste_uses_input_on_paste_once_before_child_update() {
     let target = cosmic::widget::text_input("", "one")
         .on_input(Message::Input)
         .on_paste(Message::Paste);
-    let mut menu = text_menu(target, &words(), style()).window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
-    state.children[0]
+    let mut h = Harness::target(target);
+    h.press(&renderer, &mut board);
+    h.tree.children[0]
         .state
         .downcast_mut::<cosmic::widget::text_input::State>()
         .move_cursor_to_end();
-    choose(&mut menu, &mut state, &renderer, &mut board, 2);
-    let messages = source_event(
-        &mut menu,
-        &mut state,
+    h.choose(&renderer, &mut board, 2);
+    let messages = h.event(
         &renderer,
         &mut board,
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -533,17 +568,7 @@ fn overlay_paste_uses_input_on_paste_once_before_child_update() {
         [Message::Input(value)] => panic!("on_input fired instead of on_paste: {value}"),
         other => panic!("expected one on_paste message, got {other:?}"),
     }
-    assert!(
-        source_event(
-            &mut menu,
-            &mut state,
-            &renderer,
-            &mut board,
-            redraw(),
-            POINT
-        )
-        .is_empty()
-    );
+    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty());
 }
 #[test]
 fn overlay_paste_emits_the_editor_action_once() {
@@ -551,32 +576,14 @@ fn overlay_paste_emits_the_editor_action_once() {
     let mut board = Board(Some("pasted".into()));
     let content = cosmic::widget::text_editor::Content::<Renderer>::with_text("one");
     let target = cosmic::widget::text_editor::text_editor(&content).on_action(Message::Editor);
-    let mut menu = text_menu(target, &words(), style()).window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
-    choose(&mut menu, &mut state, &renderer, &mut board, 2);
-    let messages = source_event(
-        &mut menu,
-        &mut state,
-        &renderer,
-        &mut board,
-        redraw(),
-        POINT,
-    );
+    let mut h = Harness::target(target);
+    h.press(&renderer, &mut board);
+    h.choose(&renderer, &mut board, 2);
+    let messages = h.event(&renderer, &mut board, redraw(), POINT);
     assert!(
         matches!(&messages[..], [Message::Editor(cosmic::widget::text_editor::Action::Edit(cosmic::widget::text_editor::Edit::Paste(value)))] if value.as_str() == "pasted")
     );
-    assert!(
-        source_event(
-            &mut menu,
-            &mut state,
-            &renderer,
-            &mut board,
-            redraw(),
-            POINT
-        )
-        .is_empty()
-    );
+    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty());
 }
 #[test]
 fn custom_rc_choice_is_delivered_only_to_its_source_once() {
@@ -595,68 +602,56 @@ fn custom_rc_choice_is_delivered_only_to_its_source_once() {
             destructive: false,
         })
     };
-    let mut a = text_menu(
+    let a = text_menu(
         cosmic::widget::text_input("", "a").on_input(Message::Input),
         &words(),
         style(),
     )
     .actions(item(first.clone()))
     .window_id(window::Id::NONE);
-    let mut b = text_menu(
+    let b = text_menu(
         cosmic::widget::text_input("", "b").on_input(Message::Input),
         &words(),
         style(),
     )
     .actions(item(second))
     .window_id(window::Id::NONE);
-    let mut ta = tree(&a);
-    let mut tb = tree(&b);
-    press(&mut a, &mut ta, &renderer, &mut board);
-    press(&mut b, &mut tb, &renderer, &mut board);
-    choose(&mut a, &mut ta, &renderer, &mut board, 0);
-    assert!(source_event(&mut b, &mut tb, &renderer, &mut board, redraw(), POINT).is_empty());
-    let messages = source_event(&mut a, &mut ta, &renderer, &mut board, redraw(), POINT);
+    let mut a = Harness::new(a);
+    let mut b = Harness::new(b);
+    a.press(&renderer, &mut board);
+    b.press(&renderer, &mut board);
+    a.choose(&renderer, &mut board, 0);
+    assert!(b.event(&renderer, &mut board, redraw(), POINT).is_empty());
+    let messages = a.event(&renderer, &mut board, redraw(), POINT);
     assert!(matches!(&messages[..], [Message::Custom(value)] if Rc::ptr_eq(value, &first)));
-    assert!(source_event(&mut a, &mut ta, &renderer, &mut board, redraw(), POINT).is_empty());
+    assert!(a.event(&renderer, &mut board, redraw(), POINT).is_empty());
 }
 #[test]
 fn selected_copy_runs_before_the_child_loses_focus() {
     let renderer = renderer();
     let mut board = Board::default();
-    let mut menu = text_menu(
-        cosmic::widget::text_input("", "selected").on_input(Message::Input),
-        &words(),
-        style(),
-    )
-    .window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
-    choose(&mut menu, &mut state, &renderer, &mut board, 3);
-    source_event(
-        &mut menu,
-        &mut state,
-        &renderer,
-        &mut board,
-        redraw(),
-        POINT,
-    );
+    let mut h =
+        Harness::target(cosmic::widget::text_input("", "selected").on_input(Message::Input));
+    h.press(&renderer, &mut board);
+    h.choose(&renderer, &mut board, 3);
+    h.event(&renderer, &mut board, redraw(), POINT);
     assert!(
-        menu.content
-            .text_menu_context(&state.children[0])
+        h.menu
+            .content
+            .text_menu_context(&h.tree.children[0])
             .has_selection,
         "Select All selected the native input"
     );
-    press(&mut menu, &mut state, &renderer, &mut board);
+    h.press(&renderer, &mut board);
     assert!(
-        menu.content
-            .text_menu_context(&state.children[0])
+        h.menu
+            .content
+            .text_menu_context(&h.tree.children[0])
             .has_selection,
         "right-click preserves the selection"
     );
-    choose(&mut menu, &mut state, &renderer, &mut board, 1);
-    source_event(
-        &mut menu,
-        &mut state,
+    h.choose(&renderer, &mut board, 1);
+    h.event(
         &renderer,
         &mut board,
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -672,28 +667,15 @@ fn frame(value: &'static str, selected: bool, reason: bool, theme: &Theme) -> Ve
     use cosmic::iced::advanced::renderer::{Headless, Style};
     let mut renderer = renderer();
     let mut board = Board(None);
-    let mut menu = text_menu(
-        cosmic::widget::text_input("", value).on_input(Message::Input),
-        &words(),
-        style(),
-    )
-    .window_id(window::Id::NONE);
-    let mut state = tree(&menu);
+    let mut h = Harness::target(cosmic::widget::text_input("", value).on_input(Message::Input));
     if selected {
-        press(&mut menu, &mut state, &renderer, &mut board);
-        choose(&mut menu, &mut state, &renderer, &mut board, 3);
-        source_event(
-            &mut menu,
-            &mut state,
-            &renderer,
-            &mut board,
-            redraw(),
-            POINT,
-        );
+        h.press(&renderer, &mut board);
+        h.choose(&renderer, &mut board, 3);
+        h.event(&renderer, &mut board, redraw(), POINT);
     }
-    press(&mut menu, &mut state, &renderer, &mut board);
-    let node = menu.layout(
-        &mut state,
+    h.press(&renderer, &mut board);
+    let node = h.menu.layout(
+        &mut h.tree,
         &renderer,
         &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
     );
@@ -703,8 +685,8 @@ fn frame(value: &'static str, selected: bool, reason: bool, theme: &Theme) -> Ve
         text_color: colour,
         scale_factor: 1.0,
     };
-    menu.draw(
-        &state,
+    h.menu.draw(
+        &h.tree,
         &mut renderer,
         theme,
         &paint,
@@ -712,9 +694,10 @@ fn frame(value: &'static str, selected: bool, reason: bool, theme: &Theme) -> Ve
         mouse::Cursor::Available(POINT),
         &VIEWPORT,
     );
-    let mut overlay = menu
+    let mut overlay = h
+        .menu
         .overlay(
-            &mut state,
+            &mut h.tree,
             Layout::new(&node),
             &renderer,
             &VIEWPORT,
@@ -722,36 +705,11 @@ fn frame(value: &'static str, selected: bool, reason: bool, theme: &Theme) -> Ve
         )
         .expect("open menu");
     let menu_node = overlay.as_overlay_mut().layout(&renderer, VIEWPORT.size());
-    let at = Layout::new(&menu_node)
-        .children()
-        .next()
-        .unwrap()
-        .children()
-        .nth(2)
-        .unwrap()
-        .bounds()
-        .center();
-    let cursor = mouse::Cursor::Available(at);
-    if reason {
-        let mut messages = Vec::new();
-        let mut shell = Shell::new(&mut messages);
-        overlay.as_overlay_mut().update(
-            &Event::Mouse(mouse::Event::CursorMoved { position: at }),
-            Layout::new(&menu_node),
-            cursor,
-            &renderer,
-            &mut board,
-            &mut shell,
-        );
-        overlay.as_overlay_mut().update(
-            &redraw(),
-            Layout::new(&menu_node),
-            cursor,
-            &renderer,
-            &mut board,
-            &mut shell,
-        );
-    }
+    let cursor = if reason {
+        hover_reason(&mut overlay, &menu_node, &renderer, &mut board)
+    } else {
+        mouse::Cursor::Available(row_center(&menu_node, 2))
+    };
     overlay.as_overlay().draw(
         &mut renderer,
         theme,
@@ -813,23 +771,12 @@ fn newly_restricted_target_rejects_a_previously_enabled_paste() {
     let target = cosmic::widget::text_input("", "one")
         .on_input(Message::Input)
         .on_paste(Message::Paste);
-    let mut menu = text_menu(target, &words(), style()).window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
+    let mut h = Harness::target(target);
+    h.press(&renderer, &mut board);
     // A view rebuild can apply the restriction while the old snapshot is open.
-    menu.read_only = true;
-    choose(&mut menu, &mut state, &renderer, &mut board, 2);
-    assert!(
-        source_event(
-            &mut menu,
-            &mut state,
-            &renderer,
-            &mut board,
-            redraw(),
-            POINT
-        )
-        .is_empty()
-    );
+    h.menu.read_only = true;
+    h.choose(&renderer, &mut board, 2);
+    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty());
 }
 #[test]
 fn read_only_restriction_keeps_editor_callbacks_but_disables_mutation() {
@@ -837,34 +784,17 @@ fn read_only_restriction_keeps_editor_callbacks_but_disables_mutation() {
     let mut board = Board(Some("pasted".into()));
     let content = cosmic::widget::text_editor::Content::<Renderer>::with_text("one");
     let target = cosmic::widget::text_editor::text_editor(&content).on_action(Message::Editor);
-    let mut menu = text_menu(target, &words(), style())
+    let menu = text_menu(target, &words(), style())
         .read_only()
         .window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
-    choose(&mut menu, &mut state, &renderer, &mut board, 2);
-    assert!(
-        source_event(
-            &mut menu,
-            &mut state,
-            &renderer,
-            &mut board,
-            redraw(),
-            POINT
-        )
-        .is_empty()
-    );
+    let mut h = Harness::new(menu);
+    h.press(&renderer, &mut board);
+    h.choose(&renderer, &mut board, 2);
+    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty());
     // Select all is still offered and goes through the editor's callback.
-    press(&mut menu, &mut state, &renderer, &mut board);
-    choose(&mut menu, &mut state, &renderer, &mut board, 3);
-    let messages = source_event(
-        &mut menu,
-        &mut state,
-        &renderer,
-        &mut board,
-        redraw(),
-        POINT,
-    );
+    h.press(&renderer, &mut board);
+    h.choose(&renderer, &mut board, 3);
+    let messages = h.event(&renderer, &mut board, redraw(), POINT);
     assert!(matches!(
         &messages[..],
         [Message::Editor(
@@ -877,22 +807,17 @@ fn read_only_restriction_keeps_editor_callbacks_but_disables_mutation() {
 fn disabled_paste_exposes_its_reason_as_a_nested_overlay() {
     let renderer = renderer();
     let mut board = Board::default();
-    let mut menu = text_menu(
-        cosmic::widget::text_input("", "").on_input(Message::Input),
-        &words(),
-        style(),
-    )
-    .window_id(window::Id::NONE);
-    let mut state = tree(&menu);
-    press(&mut menu, &mut state, &renderer, &mut board);
-    let node = menu.layout(
-        &mut state,
+    let mut h = Harness::target(cosmic::widget::text_input("", "").on_input(Message::Input));
+    h.press(&renderer, &mut board);
+    let node = h.menu.layout(
+        &mut h.tree,
         &renderer,
         &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
     );
-    let mut overlay = menu
+    let mut overlay = h
+        .menu
         .overlay(
-            &mut state,
+            &mut h.tree,
             Layout::new(&node),
             &renderer,
             &VIEWPORT,
@@ -900,33 +825,7 @@ fn disabled_paste_exposes_its_reason_as_a_nested_overlay() {
         )
         .expect("open menu");
     let menu_node = overlay.as_overlay_mut().layout(&renderer, VIEWPORT.size());
-    let at = Layout::new(&menu_node)
-        .children()
-        .next()
-        .unwrap()
-        .children()
-        .nth(2)
-        .unwrap()
-        .bounds()
-        .center();
-    let mut messages = Vec::new();
-    let mut shell = Shell::new(&mut messages);
-    overlay.as_overlay_mut().update(
-        &Event::Mouse(mouse::Event::CursorMoved { position: at }),
-        Layout::new(&menu_node),
-        mouse::Cursor::Available(at),
-        &renderer,
-        &mut board,
-        &mut shell,
-    );
-    overlay.as_overlay_mut().update(
-        &redraw(),
-        Layout::new(&menu_node),
-        mouse::Cursor::Available(at),
-        &renderer,
-        &mut board,
-        &mut shell,
-    );
+    hover_reason(&mut overlay, &menu_node, &renderer, &mut board);
     assert!(
         overlay
             .as_overlay_mut()
