@@ -49,6 +49,9 @@ pub struct TextMenuHistory<M> {
     pub can_redo: bool,
     pub undo: M,
     pub redo: M,
+    /// The box's text cannot be changed now (open in another editor, say),
+    /// though the box itself takes its other keys: Undo and Redo say so
+    pub read_only: bool,
 }
 
 impl<M> TextMenuHistory<M> {
@@ -62,7 +65,14 @@ impl<M> TextMenuHistory<M> {
             can_redo: text_box.can_redo(),
             undo: on_action(crate::text_box::Action::Undo),
             redo: on_action(crate::text_box::Action::Redo),
+            read_only: false,
         }
+    }
+
+    /// Undo and Redo greyed as read only while `read_only`
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
     }
 }
 
@@ -214,8 +224,9 @@ pub fn resolved_menu<M>(
                 .find(|(_, action)| *action == wanted)
                 .map(|(bind, _)| bind)
         };
+        let fixed = read_only || history.read_only;
         let reason = |can: bool, nothing: &String| {
-            if read_only {
+            if fixed {
                 Some(words.read_only.clone())
             } else {
                 (!can).then(|| nothing.clone())

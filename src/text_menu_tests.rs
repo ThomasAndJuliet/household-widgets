@@ -860,6 +860,7 @@ fn a_text_box_has_undo_and_redo_after_select_all() {
             can_redo,
             undo: "undo",
             redo: "redo",
+            read_only: false,
         })
     };
     let mut plain = context();
@@ -898,6 +899,15 @@ fn a_text_box_has_undo_and_redo_after_select_all() {
         ["Copy", "Cut", "Paste", "Select all", "—", "Undo", "Redo"]
     );
     assert!(menu.outline()[5].ends_with("Nothing to undo"));
+    // A history read only (its text open elsewhere): both say so
+    let (menu, _) = resolved_menu(
+        context(),
+        &words(),
+        Menu::new(),
+        history(true, true).map(|h| h.read_only(true)),
+        icon,
+    );
+    assert!(menu.outline()[5].ends_with("Read only") && menu.outline()[6].ends_with("Read only"));
     // Read only: both say so; a selectable text has none
     let mut fixed = context();
     fixed.kind = TextKind::ReadOnlyInput;
@@ -914,7 +924,7 @@ fn editor_menu<'a>(
     text_box: &'a crate::TextBox<()>,
 ) -> TextMenu<cosmic::widget::text_editor::TextEditor<'a, Message>, Message> {
     text_menu(
-        cosmic::widget::text_editor::text_editor(&**text_box).on_action(Message::Editor),
+        cosmic::widget::text_editor::text_editor(text_box).on_action(Message::Editor),
         &words(),
         style(),
     )
@@ -944,21 +954,47 @@ fn a_text_box_menu_has_undo_and_redo_after_select_all_and_delivers_them_once() {
     h.press(&renderer, &mut board);
     other.press(&renderer, &mut board);
 
-    let node = h.menu.layout(&mut h.tree, &renderer, &layout::Limits::new(Size::ZERO, VIEWPORT.size()));
+    let node = h.menu.layout(
+        &mut h.tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, VIEWPORT.size()),
+    );
     let mut overlay = h
         .menu
-        .overlay(&mut h.tree, Layout::new(&node), &renderer, &VIEWPORT, Vector::ZERO)
+        .overlay(
+            &mut h.tree,
+            Layout::new(&node),
+            &renderer,
+            &VIEWPORT,
+            Vector::ZERO,
+        )
         .expect("the menu is open");
     let menu_node = overlay.as_overlay_mut().layout(&renderer, VIEWPORT.size());
-    let rows = Layout::new(&menu_node).children().next().expect("menu").children().count();
+    let rows = Layout::new(&menu_node)
+        .children()
+        .next()
+        .expect("menu")
+        .children()
+        .count();
     assert_eq!(rows, 7, "four text rows, a divider, Undo and Redo");
     drop(overlay);
 
     h.choose(&renderer, &mut board, 5);
-    assert!(other.event(&renderer, &mut board, redraw(), POINT).is_empty(), "the other box heard nothing");
+    assert!(
+        other
+            .event(&renderer, &mut board, redraw(), POINT)
+            .is_empty(),
+        "the other box heard nothing"
+    );
     let messages = h.event(&renderer, &mut board, redraw(), POINT);
-    assert!(matches!(&messages[..], [Message::Box(crate::text_box::Action::Undo)]), "the box's Undo, once: {messages:?}");
-    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty(), "and not again");
+    assert!(
+        matches!(&messages[..], [Message::Box(crate::text_box::Action::Undo)]),
+        "the box's Undo, once: {messages:?}"
+    );
+    assert!(
+        h.event(&renderer, &mut board, redraw(), POINT).is_empty(),
+        "and not again"
+    );
 
     // A box with a step to redo: the seventh row
     let mut undone = crate::TextBox::<()>::starting_with("three", crate::text_box::Caret::End);
@@ -969,6 +1005,12 @@ fn a_text_box_menu_has_undo_and_redo_after_select_all_and_delivers_them_once() {
     r.press(&renderer, &mut board);
     r.choose(&renderer, &mut board, 6);
     let messages = r.event(&renderer, &mut board, redraw(), POINT);
-    assert!(matches!(&messages[..], [Message::Box(crate::text_box::Action::Redo)]), "the box's Redo, once: {messages:?}");
-    assert!(r.event(&renderer, &mut board, redraw(), POINT).is_empty(), "and not again");
+    assert!(
+        matches!(&messages[..], [Message::Box(crate::text_box::Action::Redo)]),
+        "the box's Redo, once: {messages:?}"
+    );
+    assert!(
+        r.event(&renderer, &mut board, redraw(), POINT).is_empty(),
+        "and not again"
+    );
 }
