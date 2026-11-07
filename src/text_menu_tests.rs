@@ -378,6 +378,7 @@ enum Message {
     Paste(String),
     Editor(cosmic::widget::text_editor::Action),
     Custom(Rc<str>),
+    Box(crate::text_box::Action),
 }
 
 #[derive(Default)]
@@ -906,4 +907,68 @@ fn a_text_box_has_undo_and_redo_after_select_all() {
     text.kind = TextKind::Selectable;
     let (menu, _) = resolved_menu(text, &words(), Menu::new(), history(true, true), icon);
     assert!(!labels(&menu).contains(&"Undo".to_string()));
+}
+
+/// A text editor showing `text_box`, with its menu and its history
+fn editor_menu<'a>(
+    text_box: &'a crate::TextBox<()>,
+) -> TextMenu<cosmic::widget::text_editor::TextEditor<'a, Message>, Message> {
+    text_menu(
+        cosmic::widget::text_editor::text_editor(&**text_box).on_action(Message::Editor),
+        &words(),
+        style(),
+    )
+    .history(TextMenuHistory::of(text_box, Message::Box))
+    .window_id(window::Id::NONE)
+}
+
+/// A text editor with its box's history, through the real overlay: the open
+/// menu has seven rows (Cut, Copy, Paste, Select all, a divider, Undo, Redo);
+/// choosing the sixth gives the box's Undo message, once, to that box alone;
+/// in a box with a step to redo, the seventh gives its Redo, once. (The
+/// overlay's labels cannot be read headless: the rows are told by where
+/// they are and what they deliver)
+#[test]
+fn a_text_box_menu_has_undo_and_redo_after_select_all_and_delivers_them_once() {
+    use cosmic::widget::text_editor::{Action as EditorAction, Edit};
+    let renderer = renderer();
+    let mut board = Board::default();
+    let mut text_box = crate::TextBox::<()>::starting_with("one", crate::text_box::Caret::End);
+    let _ = text_box.perform(EditorAction::Edit(Edit::Insert('x')));
+    assert!(text_box.can_undo());
+    let mut h = Harness::new(editor_menu(&text_box));
+    // Another box in the window, with a history of its own: it must hear nothing
+    let mut other_box = crate::TextBox::<()>::starting_with("two", crate::text_box::Caret::End);
+    let _ = other_box.perform(EditorAction::Edit(Edit::Insert('y')));
+    let mut other = Harness::new(editor_menu(&other_box));
+    h.press(&renderer, &mut board);
+    other.press(&renderer, &mut board);
+
+    let node = h.menu.layout(&mut h.tree, &renderer, &layout::Limits::new(Size::ZERO, VIEWPORT.size()));
+    let mut overlay = h
+        .menu
+        .overlay(&mut h.tree, Layout::new(&node), &renderer, &VIEWPORT, Vector::ZERO)
+        .expect("the menu is open");
+    let menu_node = overlay.as_overlay_mut().layout(&renderer, VIEWPORT.size());
+    let rows = Layout::new(&menu_node).children().next().expect("menu").children().count();
+    assert_eq!(rows, 7, "four text rows, a divider, Undo and Redo");
+    drop(overlay);
+
+    h.choose(&renderer, &mut board, 5);
+    assert!(other.event(&renderer, &mut board, redraw(), POINT).is_empty(), "the other box heard nothing");
+    let messages = h.event(&renderer, &mut board, redraw(), POINT);
+    assert!(matches!(&messages[..], [Message::Box(crate::text_box::Action::Undo)]), "the box's Undo, once: {messages:?}");
+    assert!(h.event(&renderer, &mut board, redraw(), POINT).is_empty(), "and not again");
+
+    // A box with a step to redo: the seventh row
+    let mut undone = crate::TextBox::<()>::starting_with("three", crate::text_box::Caret::End);
+    let _ = undone.perform(EditorAction::Edit(Edit::Insert('z')));
+    let _ = undone.perform(crate::text_box::Action::Undo);
+    assert!(undone.can_redo() && !undone.can_undo());
+    let mut r = Harness::new(editor_menu(&undone));
+    r.press(&renderer, &mut board);
+    r.choose(&renderer, &mut board, 6);
+    let messages = r.event(&renderer, &mut board, redraw(), POINT);
+    assert!(matches!(&messages[..], [Message::Box(crate::text_box::Action::Redo)]), "the box's Redo, once: {messages:?}");
+    assert!(r.event(&renderer, &mut board, redraw(), POINT).is_empty(), "and not again");
 }
