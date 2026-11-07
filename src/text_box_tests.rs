@@ -783,3 +783,13 @@ fn the_standard_keys_are_one_list() {
         );
     }
 }
+
+/// Losing the focus (a menu opened) does not lose the selection: iced's
+/// ClearSelection is kept from it, for the menu's Cut and Copy
+#[test]
+fn losing_the_focus_keeps_the_selection() {
+    let mut text_box: TextBox = TextBox::starting_with("hello world", Caret::End);
+    text_box.perform(text_editor::Action::SelectAll);
+    text_box.perform(text_editor::Action::ClearSelection);
+    assert_eq!(text_box.selection().as_deref(), Some("hello world"));
+}
