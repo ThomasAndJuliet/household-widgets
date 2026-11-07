@@ -14,6 +14,7 @@
 #[macro_use]
 mod forward;
 mod level;
+pub mod menu;
 mod switch;
 mod text_button;
 mod tooltip;
