@@ -44,6 +44,16 @@ menu metadata. `MenuRow` also supplies the row contents and measured width
 for native menu-bar adapters; `measured_width` shares its bounded shaping cache
 with other interface text at any size and font.
 
+`text_menu(target, &words, style)` wraps a native text input, editor or
+selectable text. Supply localized `TextMenuWords` and a `MenuStyle` for the
+native command rows; `.actions(menu)` adds resolved application actions. The
+widget snapshots those messages when opened, preserves native editing and
+selection, and presents disabled explanations from native capabilities. Put
+caret or tooltip wrappers outside the resulting element. Enable this crate's
+`a11y` feature whenever the app enables libcosmic accessibility, so the
+wrapped target contributes its accessibility nodes. The app's libcosmic
+patch must also resolve `iced_accessibility` to the same fork revision.
+
 ## Depending on it
 
 ```toml
@@ -56,9 +66,9 @@ The crate depends on libcosmic as an app does, by upstream's URL with no rev:
 libcosmic = { git = "https://github.com/pop-os/libcosmic.git", default-features = false }
 ```
 
-Every household app has `[patch."https://github.com/pop-os/libcosmic.git"]` pointing at the household fork at the revision it pins. A patch replaces every dependency on that URL, so this crate is built with the app's own libcosmic: there is one libcosmic in the app's lock, and there is no version tie between this crate and any app. Naming the fork's URL here would give an app two libcosmics, and its `Element` would not be this crate's `Element`. The same goes for `household-tones`: this crate and the app must spell its URL the same way, as above, so that the app's lock has one.
+Every household app has `[patch."https://github.com/pop-os/libcosmic.git"]` pointing at the household fork at the revision it pins. A patch replaces every dependency on that URL, so this crate is built with the app's own libcosmic: there is one libcosmic in the app's lock, selected by the app at a compatible fork revision. Naming the fork's URL here would give an app two libcosmics, and its `Element` would not be this crate's `Element`. The same goes for `household-tones`: this crate and the app must spell its URL the same way, as above, so that the app's lock has one.
 
-This repository's own `Cargo.toml` also has a `[patch]`, pinned to the fork at `183fe5a8`, the revision more apps pin than any other. Cargo reads `[patch]` only from the workspace being built, so it applies only to this repository's tests, Clippy and CI. Move it when the apps move.
+This repository's own `Cargo.toml` has a `[patch]` for its tests, Clippy and CI. Apps using `TextMenu` must pin a compatible household libcosmic revision providing the native text target and session interfaces. This crate is tested against `dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc`, which includes the native editing, popup and named-selection fixes; older fork revisions lack these interfaces or fixes. Cargo reads `[patch]` only from the workspace being built, so each app chooses its own compatible fork revision.
 
 An app's CI needs its own read key for this repository, `HOUSEHOLD_WIDGETS_DEPLOY_KEY`, with a line for it in that app's `scripts/ci-private-crates.sh`, and a Flatpak app needs the crate in its `cargo-sources.json`.
 
@@ -68,19 +78,22 @@ An app's CI needs its own read key for this repository, `HOUSEHOLD_WIDGETS_DEPLO
 2. Take colours from `household-tones`. If the maths is missing, add it there.
 3. Add tests that draw the real widget with iced's headless tiny-skia renderer and read the pixels, as `src/switch_tests.rs` does: the expected look comes from the rule's own values, or from libcosmic's widget drawn beside it.
 4. Name the rule and Juliet's words in the module's documentation.
-5. Build against the oldest and newest libcosmic the apps pin. `Widget` and the theme can change between them.
+5. Build against the supported libcosmic revisions. `TextMenu` requires the native text target and session interfaces; older revisions cannot build it. `Widget` and the theme can change between revisions.
 
 ## Checks and CI
 
 ```sh
 ~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- fmt --check
-~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- clippy --all-targets --locked -- -D warnings
+~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- clippy --all-targets --all-features --locked -- -D warnings
 ~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- test --locked
+~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- test --all-features --locked
 ```
 
 Neo cannot fetch the private repositories over ssh, so the revisions in `Cargo.lock` must already be in neo's cargo cache. To add one, push it there from a clone, e.g. `git push jcooke@neo:.cargo/git/db/household-kit-342368da86f19946 REV:refs/heads/locked-REV`; the fork's is `libcosmic-bd0cc8a7924f73dc`.
 
-`.github/workflows/ci.yml` runs the same three checks on neo's runner (`neo-ubuntu`, or GitHub-hosted when the `CI_RUNNER` variable is `hosted`). It fetches the private crates with `scripts/ci-private-crates.sh` (COSMIC Terminal's, copied), so the repository needs two secrets, the private halves of read-only deploy keys: `LIBCOSMIC_DEPLOY_KEY` for the fork and `HOUSEHOLD_KIT_DEPLOY_KEY` for household-kit. Without them, the job stops at that step with a message naming the secret.
+`.github/workflows/ci.yml` runs `cargo fmt --all --check`,
+`cargo clippy --all-targets --all-features --locked -- -D warnings`,
+`cargo test --locked` and `cargo test --all-features --locked` on neo's runner (`neo-ubuntu`, or GitHub-hosted when the `CI_RUNNER` variable is `hosted`). It fetches the private crates with `scripts/ci-private-crates.sh` (COSMIC Terminal's, copied), so the repository needs two secrets, the private halves of read-only deploy keys: `LIBCOSMIC_DEPLOY_KEY` for the fork and `HOUSEHOLD_KIT_DEPLOY_KEY` for household-kit. Without them, the job stops at that step with a message naming the secret.
 
 ## Licence
 

@@ -50,6 +50,8 @@ jobs:
           HOUSEHOLD_KIT_DEPLOY_KEY: ${{ secrets.HOUSEHOLD_KIT_DEPLOY_KEY }}
         run: scripts/ci-private-crates.sh libcosmic household-kit
       - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Tests
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Default tests
         run: cargo test --locked
+      - name: Tests with accessibility
+        run: cargo test --all-features --locked
