@@ -46,7 +46,11 @@ with other interface text at any size and font.
 
 `text_menu(target, &words, style)` wraps a native text input, editor or
 selectable text. Supply localized `TextMenuWords` and a `MenuStyle` for the
-native command rows; `.actions(menu)` adds resolved application actions. The
+native command rows; `.actions(menu)` adds resolved application actions, and
+`.history(TextMenuHistory::of(&text_box, on_action))` a text box's Undo · Redo
+after Select all, publishing the box's own messages. With text selected the
+menu starts with Copy (rule 28). `resolved_menu` gives the rows for a context,
+for an app's tests. The
 widget snapshots those messages when opened, preserves native editing and
 selection, and presents disabled explanations from native capabilities. Put
 caret or tooltip wrappers outside the resulting element. Enable this crate's

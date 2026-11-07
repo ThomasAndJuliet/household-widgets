@@ -32,6 +32,38 @@ pub struct TextMenuWords {
     pub read_only: String,
     pub clipboard_empty: String,
     pub empty_content: String,
+    /// A text box's Undo and Redo ([`TextMenu::history`]), and why each is
+    /// disabled with nothing to undo or redo
+    pub undo: String,
+    pub redo: String,
+    pub nothing_to_undo: String,
+    pub nothing_to_redo: String,
+}
+
+/// A text box's undo history, as its menu offers it: Undo and Redo after
+/// Select all, each publishing the box's own message (Juliet approved, 7
+/// Nov 2026). Made from a [`TextBox`](crate::TextBox) by [`Self::of`]
+#[derive(Clone)]
+pub struct TextMenuHistory<M> {
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub undo: M,
+    pub redo: M,
+}
+
+impl<M> TextMenuHistory<M> {
+    /// `text_box`'s history, `on_action` its message, as its editor's
+    pub fn of<P: Clone>(
+        text_box: &crate::TextBox<P>,
+        on_action: impl Fn(crate::text_box::Action) -> M,
+    ) -> Self {
+        Self {
+            can_undo: text_box.can_undo(),
+            can_redo: text_box.can_redo(),
+            undo: on_action(crate::text_box::Action::Undo),
+            redo: on_action(crate::text_box::Action::Redo),
+        }
+    }
 }
 
 /// A concrete native text target with the household's text menu.
@@ -42,6 +74,7 @@ pub struct TextMenu<W, M> {
     style: MenuStyle<TextMenuCommand>,
     window: window::Id,
     read_only: bool,
+    history: Option<TextMenuHistory<M>>,
 }
 
 /// Configure a native target before converting it into an element.
@@ -61,6 +94,7 @@ where
         style,
         window: cosmic::widget::text_context_menu::current_window_id(),
         read_only: false,
+        history: None,
     }
 }
 
@@ -68,6 +102,13 @@ impl<W, M> TextMenu<W, M> {
     /// Custom actions are snapshotted when the menu opens.
     pub fn actions(mut self, actions: Menu<M>) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// A text box's Undo and Redo, after Select all; snapshotted when the
+    /// menu opens, as the actions are
+    pub fn history(mut self, history: TextMenuHistory<M>) -> Self {
+        self.history = Some(history);
         self
     }
 
@@ -84,10 +125,14 @@ impl<W, M> TextMenu<W, M> {
     }
 }
 
-fn resolved_menu<M>(
+/// The menu for a target with `context`: its rows, and the messages its
+/// custom rows (`actions`, `history`) publish by index. Public for an app's
+/// tests of what its menus hold
+pub fn resolved_menu<M>(
     context: TextMenuContext,
     words: &TextMenuWords,
     actions: Menu<M>,
+    history: Option<TextMenuHistory<M>>,
     icon: fn(&'static str) -> cosmic::widget::icon::Handle,
 ) -> (Menu<TextMenuCommand>, Vec<M>) {
     let messages = RefCell::new(Vec::new());
@@ -126,20 +171,26 @@ fn resolved_menu<M>(
             destructive: false,
         };
     let mut text = Menu::new();
-    if field {
-        text = text.item(item(
-            TextAction::Cut,
-            &words.cut,
-            Some("edit-cut-symbolic"),
-            "x",
-        ));
-    }
-    text = text.item(item(
+    let cut = field.then(|| item(TextAction::Cut, &words.cut, Some("edit-cut-symbolic"), "x"));
+    let copy = item(
         TextAction::Copy,
         &words.copy,
         Some("edit-copy-symbolic"),
         "c",
-    ));
+    );
+    // With text selected, Copy first (household rule 28: a menu for a
+    // selection starts with Copy)
+    if context.has_selection {
+        text = text.item(copy);
+        if let Some(cut) = cut {
+            text = text.item(cut);
+        }
+    } else {
+        if let Some(cut) = cut {
+            text = text.item(cut);
+        }
+        text = text.item(copy);
+    }
     if field {
         text = text.item(item(
             TextAction::Paste,
@@ -149,6 +200,50 @@ fn resolved_menu<M>(
         ));
     }
     text = text.item(item(TextAction::SelectAll, &words.select_all, None, "a"));
+    // A text box's Undo · Redo, a group of their own after Select all
+    if let Some(history) = history.filter(|_| field) {
+        let mut messages = messages.borrow_mut();
+        let mut custom = |message| {
+            let index = messages.len();
+            messages.push(message);
+            TextMenuCommand::Custom(index)
+        };
+        let key = |wanted: crate::text_box::Action| {
+            crate::text_box::standard_keys()
+                .into_iter()
+                .find(|(_, action)| *action == wanted)
+                .map(|(bind, _)| bind)
+        };
+        let reason = |can: bool, nothing: &String| {
+            if read_only {
+                Some(words.read_only.clone())
+            } else {
+                (!can).then(|| nothing.clone())
+            }
+        };
+        let row = |label: &String, message, action, reason| MenuItem {
+            label: label.clone(),
+            message,
+            icon: None,
+            shortcut: key(action),
+            mark: None,
+            disabled_reason: reason,
+            destructive: false,
+        };
+        let undo = row(
+            &words.undo,
+            custom(history.undo),
+            crate::text_box::Action::Undo,
+            reason(history.can_undo, &words.nothing_to_undo),
+        );
+        let redo = row(
+            &words.redo,
+            custom(history.redo),
+            crate::text_box::Action::Redo,
+            reason(history.can_redo, &words.nothing_to_redo),
+        );
+        text = text.append(Menu::new().item(undo).item(redo));
+    }
     let menu = if context.has_selection {
         text.append(custom)
     } else {
@@ -293,8 +388,13 @@ where
             if self.read_only && context.kind == TextKind::Editable {
                 context.kind = TextKind::ReadOnlyInput;
             }
-            let (menu, messages) =
-                resolved_menu(context, &self.words, self.actions.clone(), self.style.icon);
+            let (menu, messages) = resolved_menu(
+                context,
+                &self.words,
+                self.actions.clone(),
+                self.history.clone(),
+                self.style.icon,
+            );
             let width = menu.width();
             let roots = vec![cosmic::widget::menu::Tree::with_children(
                 Element::from(cosmic::widget::Row::new()),

@@ -15,6 +15,10 @@ fn words() -> TextMenuWords {
         read_only: "Read only".into(),
         clipboard_empty: "Clipboard empty".into(),
         empty_content: "Empty".into(),
+        undo: "Undo".into(),
+        redo: "Redo".into(),
+        nothing_to_undo: "Nothing to undo".into(),
+        nothing_to_redo: "Nothing to redo".into(),
     }
 }
 fn icon(name: &'static str) -> cosmic::widget::icon::Handle {
@@ -30,7 +34,7 @@ fn context() -> TextMenuContext {
     }
 }
 fn rows(context: TextMenuContext) -> Vec<(String, Option<String>)> {
-    let (menu, _) = resolved_menu(context, &words(), Menu::<()>::new(), icon);
+    let (menu, _) = resolved_menu(context, &words(), Menu::<()>::new(), None, icon);
     menu.rows()
         .iter()
         .filter_map(|row| match row {
@@ -83,7 +87,7 @@ fn capabilities_and_reason_priority() {
 }
 #[test]
 fn standard_rows_have_native_shortcuts_and_expected_icons() {
-    let (menu, _) = resolved_menu(context(), &words(), Menu::<()>::new(), icon);
+    let (menu, _) = resolved_menu(context(), &words(), Menu::<()>::new(), None, icon);
     let items: Vec<_> = menu
         .rows()
         .iter()
@@ -104,7 +108,8 @@ fn standard_rows_have_native_shortcuts_and_expected_icons() {
             .iter()
             .map(|item| item.shortcut.as_ref().unwrap().key.clone())
             .collect::<Vec<_>>(),
-        ["x", "c", "v", "a"]
+        // With text selected (as `context()` has it), Copy first (rule 28)
+        ["c", "x", "v", "a"]
             .into_iter()
             .map(|letter| Key::Character(letter.into()))
             .collect::<Vec<_>>()
@@ -127,12 +132,13 @@ fn custom_snapshot_is_local_and_selection_sets_group_order() {
         disabled_reason: None,
         destructive: false,
     });
-    let (menu, snapshot) = resolved_menu(context(), &words(), custom.clone(), icon);
-    assert_eq!(menu.outline()[0].split('\t').next(), Some("Cut"));
+    let (menu, snapshot) = resolved_menu(context(), &words(), custom.clone(), None, icon);
+    // With text selected, Copy first (household rule 28)
+    assert_eq!(menu.outline()[0].split('\t').next(), Some("Copy"));
     assert!(Rc::ptr_eq(&snapshot[0], &token));
     let mut c = context();
     c.has_selection = false;
-    let (menu, snapshot) = resolved_menu(c, &words(), custom, icon);
+    let (menu, snapshot) = resolved_menu(c, &words(), custom, None, icon);
     assert_eq!(menu.outline()[0], "Send");
     assert!(Rc::ptr_eq(&snapshot[0], &token));
 }
@@ -833,4 +839,71 @@ fn disabled_paste_exposes_its_reason_as_a_nested_overlay() {
             .is_some(),
         "hovering disabled Paste presents its explanation"
     );
+}
+
+/// Juliet's approved menu (7 Nov 2026): without a selection Cut · Copy ·
+/// Paste · Select all, with one Copy first (rule 28); for a text box with a
+/// history, Undo · Redo after Select all, each greyed with its reason, its
+/// keys the text box's own, publishing the box's message
+#[test]
+fn a_text_box_has_undo_and_redo_after_select_all() {
+    let labels = |menu: &Menu<TextMenuCommand>| -> Vec<String> {
+        menu.outline()
+            .iter()
+            .map(|line| line.split('\t').next().unwrap_or_default().to_string())
+            .collect()
+    };
+    let history = |can_undo, can_redo| {
+        Some(TextMenuHistory {
+            can_undo,
+            can_redo,
+            undo: "undo",
+            redo: "redo",
+        })
+    };
+    let mut plain = context();
+    plain.has_selection = false;
+    let (menu, messages) = resolved_menu(plain, &words(), Menu::new(), history(true, false), icon);
+    assert_eq!(
+        labels(&menu),
+        ["Cut", "Copy", "Paste", "Select all", "—", "Undo", "Redo"]
+    );
+    let outline = menu.outline();
+    assert_eq!(outline[5], "Undo\tCtrl + Z");
+    assert!(
+        outline[6].starts_with("Redo\tCtrl + Shift + Z\t")
+            && outline[6].ends_with("Nothing to redo"),
+        "{outline:?}"
+    );
+    let message = |label: &str| {
+        let item = menu
+            .rows()
+            .iter()
+            .find_map(|row| match row {
+                Row::Item(item) if item.label == label => Some(item),
+                _ => None,
+            })
+            .expect("the row");
+        match item.message {
+            TextMenuCommand::Custom(index) => messages[index],
+            _ => panic!("a custom row"),
+        }
+    };
+    assert_eq!((message("Undo"), message("Redo")), ("undo", "redo"));
+    // With a selection, Copy first; the same place
+    let (menu, _) = resolved_menu(context(), &words(), Menu::new(), history(false, true), icon);
+    assert_eq!(
+        labels(&menu),
+        ["Copy", "Cut", "Paste", "Select all", "—", "Undo", "Redo"]
+    );
+    assert!(menu.outline()[5].ends_with("Nothing to undo"));
+    // Read only: both say so; a selectable text has none
+    let mut fixed = context();
+    fixed.kind = TextKind::ReadOnlyInput;
+    let (menu, _) = resolved_menu(fixed, &words(), Menu::new(), history(true, true), icon);
+    assert!(menu.outline()[5].ends_with("Read only") && menu.outline()[6].ends_with("Read only"));
+    let mut text = context();
+    text.kind = TextKind::Selectable;
+    let (menu, _) = resolved_menu(text, &words(), Menu::new(), history(true, true), icon);
+    assert!(!labels(&menu).contains(&"Undo".to_string()));
 }
