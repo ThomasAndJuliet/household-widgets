@@ -8,6 +8,9 @@ license = "GPL-3.0-only"
 publish = false
 repository = "https://github.com/ThomasAndJuliet/household-widgets"
 
+# Also build independently when checked out inside an application's worktree.
+[workspace]
+
 # libcosmic, as an app depends on it (see the README). It names upstream's
 # URL with no branch or rev on purpose, as household-test's does: every app
 # already has `[patch."https://github.com/pop-os/libcosmic.git"]` pointing at
