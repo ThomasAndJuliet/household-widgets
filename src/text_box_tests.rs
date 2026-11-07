@@ -725,10 +725,61 @@ fn a_step_with_the_apps_part_hands_it_back() {
     text_box.perform(Action::Undo);
     assert_eq!(text_box.perform(Action::Undo), None);
     assert_eq!(text_box.text(), "a prompt");
-    text_box.perform(Action::Redo);
-    text_box.forget_redo();
-    assert!(!text_box.can_redo());
-    text_box.forget_undo();
-    assert!(!text_box.can_undo());
-    assert_eq!(text_box.text(), "a prompt!");
+}
+
+/// Parts that can no longer be undone or redone: the history ends at the
+/// nearest step with one, either way, and the steps of the text alone
+/// between it and now are kept
+#[test]
+fn forgetting_the_parts_keeps_the_typing_nearer_now() {
+    let mut text_box: TextBox<&str> = TextBox::new();
+    typed(&mut text_box, "before");
+    text_box.replace_with("", Caret::Start, "stashed");
+    typed(&mut text_box, "one two");
+    // Undone back to the stash; a step of typing further on to redo
+    text_box.replace_with("x", Caret::End, "later");
+    text_box.perform(Action::Undo);
+    assert_eq!(text_box.text(), "one two");
+    text_box.forget_parts();
+    // Back through the typing after the stash, not past it
+    assert_eq!(undone(&mut text_box), ["one", ""]);
+    assert!(!text_box.can_redo() || text_box.redo_part().is_none());
+    // Forward again through the typing; the later step with a part is gone
+    while text_box.can_redo() {
+        assert_eq!(text_box.perform(Action::Redo), None);
+    }
+    assert_eq!(text_box.text(), "one two");
+}
+
+/// The standard keys are one list, which the key binding goes by
+#[test]
+fn the_standard_keys_are_one_list() {
+    let keys = crate::text_box::standard_keys();
+    let actions: Vec<Action> = keys.iter().map(|(_, action)| action.clone()).collect();
+    assert_eq!(
+        actions,
+        [
+            Action::Undo,
+            Action::Redo,
+            Action::Redo,
+            Action::DeleteWordBefore,
+            Action::DeleteWordAfter
+        ]
+    );
+    for (bind, action) in keys {
+        let mut modifiers = Modifiers::empty();
+        for modifier in &bind.modifiers {
+            modifiers |= match modifier {
+                cosmic::widget::menu::key_bind::Modifier::Ctrl => Modifiers::CTRL,
+                cosmic::widget::menu::key_bind::Modifier::Shift => Modifiers::SHIFT,
+                _ => Modifiers::empty(),
+            };
+        }
+        let physical = Physical::Unidentified(NativeCode::Unidentified);
+        assert_eq!(
+            bound(press(bind.key.clone(), physical, modifiers, true)),
+            Some(action),
+            "{bind:?}"
+        );
+    }
 }

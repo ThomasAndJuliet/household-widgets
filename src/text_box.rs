@@ -74,6 +74,7 @@ use cosmic::iced::advanced::widget::{Operation, Tree, Widget, tree};
 use cosmic::iced::advanced::{Clipboard, Shell, mouse, overlay};
 use cosmic::iced::keyboard::{self, Key, Modifiers, key::Named, key::Physical};
 use cosmic::iced::{Event, Length, Point, Rectangle, Size, Vector};
+use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion, Position};
 
 /// The steps Ctrl+Z can go back
@@ -198,9 +199,23 @@ impl<S: Kept, P: Clone> History<S, P> {
         self.bytes -= self.redo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
     }
 
-    /// What Undo would have taken back is gone, the steps Redo has kept
-    fn drop_undo(&mut self) {
-        self.bytes -= self.undo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
+    /// The history ends at the nearest step with a part either way: it,
+    /// and all beyond it, gone
+    fn cut_at_parts(&mut self) {
+        if let Some(at) = self.undo.iter().rposition(|(_, part)| part.is_some()) {
+            self.bytes -= self
+                .undo
+                .drain(..=at)
+                .map(|(s, _)| s.bytes())
+                .sum::<usize>();
+        }
+        if let Some(at) = self.redo.iter().rposition(|(_, part)| part.is_some()) {
+            self.bytes -= self
+                .redo
+                .drain(..=at)
+                .map(|(s, _)| s.bytes())
+                .sum::<usize>();
+        }
     }
 }
 
@@ -264,7 +279,7 @@ impl Kept for Snapshot {
 /// card added. Undo and Redo hand it back ([`Turn`]) for the app to undo or
 /// redo its part. Before, the app can look at it
 /// ([`undo_part`](Self::undo_part)) and, if its part can no longer be
-/// undone, end the history there ([`forget_undo`](Self::forget_undo)).
+/// undone, end the history there ([`forget_parts`](Self::forget_parts)).
 /// Without parts, `P` is `()`: a `let` then names the type, `let draft:
 /// TextBox = TextBox::new()`.
 pub struct TextBox<P = ()> {
@@ -373,17 +388,12 @@ impl<P: Clone> TextBox<P> {
         self.history.redo.last().and_then(|(_, part)| part.as_ref())
     }
 
-    /// Nothing more to undo: a step whose app's part can no longer be
-    /// undone ends the history there (going back past it would bring the
-    /// text back without the rest)
-    pub fn forget_undo(&mut self) {
-        self.history.drop_undo();
-    }
-
-    /// Nothing more to redo, for a step whose app's part can no longer be
-    /// redone
-    pub fn forget_redo(&mut self) {
-        self.history.drop_redo();
+    /// The steps with an app's part can no longer be undone or redone (the
+    /// app's side of them changed): the history ends at the nearest of them
+    /// either way, the steps of the text alone between kept. Going back
+    /// past one would bring back text its part took elsewhere
+    pub fn forget_parts(&mut self) {
+        self.history.cut_at_parts();
     }
 
     /// The text replaced by the app as part of its last step, which Undo
@@ -689,40 +699,60 @@ fn line_starts(text: &str) -> Vec<usize> {
         .collect()
 }
 
-/// What a key does to a box's history, as household rule 21c has it:
-/// Ctrl+Z undoes; Ctrl+Shift+Z, and Ctrl+Y as Cerea and Marginalium also
-/// have it, redo. Any keyboard layout: by the key's Latin letter. For a box
-/// that is given keys some other way than as a focused widget (the
-/// terminal's prompt, typed into while the conversation has the keys)
+/// The keys a text box adds to iced's (household rule 21c), and what each
+/// does: Ctrl+Z undoes; Ctrl+Shift+Z, and Ctrl+Y as Cerea and Marginalium
+/// also have it, redo; Ctrl+Backspace and Ctrl+Delete delete a word. The one
+/// list: [`key_binding`] and [`history_key`] go by it, and an app shows it
+/// (its keyboard shortcuts, its menus). Any keyboard layout matches, by the
+/// key's place ([`KeyBind::matches`])
+pub fn standard_keys() -> Vec<(KeyBind, Action)> {
+    let ctrl = |key: Key| KeyBind {
+        modifiers: vec![Modifier::Ctrl],
+        key,
+    };
+    let letter = |c: &str| Key::Character(c.into());
+    vec![
+        (ctrl(letter("z")), Action::Undo),
+        (
+            KeyBind {
+                modifiers: vec![Modifier::Ctrl, Modifier::Shift],
+                key: letter("z"),
+            },
+            Action::Redo,
+        ),
+        (ctrl(letter("y")), Action::Redo),
+        (ctrl(Key::Named(Named::Backspace)), Action::DeleteWordBefore),
+        (ctrl(Key::Named(Named::Delete)), Action::DeleteWordAfter),
+    ]
+}
+
+/// What a standard key does ([`standard_keys`]), if it is one
+fn standard_key(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<Action> {
+    standard_keys()
+        .into_iter()
+        .find(|(bind, _)| bind.matches(modifiers, key, Some(&physical)))
+        .map(|(_, action)| action)
+}
+
+/// What a key does to a box's history: Undo or Redo, by [`standard_keys`].
+/// For a box that is given keys some other way than as a focused widget
+/// (the terminal's prompt, typed into while the conversation has the keys)
 pub fn history_key(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<Action> {
-    if !modifiers.command() || modifiers.alt() || modifiers.logo() {
-        return None;
-    }
-    match key.to_latin(physical).map(|c| c.to_ascii_lowercase()) {
-        Some('z') if modifiers.shift() => Some(Action::Redo),
-        Some('z') => Some(Action::Undo),
-        Some('y') if !modifiers.shift() => Some(Action::Redo),
-        _ => None,
-    }
+    standard_key(key, physical, modifiers)
+        .filter(|action| matches!(action, Action::Undo | Action::Redo))
 }
 
 /// The standard keys of a text box (see the module's description), for
-/// `text_editor(..).key_binding(..)`: iced's, with Undo, Redo and deleting
-/// a word added. `on_action` is the box's message, as given to
-/// `on_action`. An app with keys of its own handles them first and ends its
-/// binding with this. Nothing while the box is not focused, so that the key
-/// is not captured and goes to the app.
+/// `text_editor(..).key_binding(..)`: iced's, with [`standard_keys`]
+/// added. `on_action` is the box's message, as given to `on_action`. An app
+/// with keys of its own handles them first and ends its binding with this.
+/// Nothing while the box is not focused, so that the key is not captured
+/// and goes to the app.
 pub fn key_binding<M>(press: KeyPress, on_action: impl Fn(Action) -> M) -> Option<Binding<M>> {
     if !matches!(press.status, text_editor::Status::Focused { .. }) {
         return None;
     }
-    let ctrl = press.modifiers.command() && !press.modifiers.alt() && !press.modifiers.shift();
-    let own = history_key(&press.key, press.physical_key, press.modifiers).or(match press.key {
-        Key::Named(Named::Backspace) if ctrl => Some(Action::DeleteWordBefore),
-        Key::Named(Named::Delete) if ctrl => Some(Action::DeleteWordAfter),
-        _ => None,
-    });
-    match own {
+    match standard_key(&press.key, press.physical_key, press.modifiers) {
         Some(action) => Some(Binding::Custom(on_action(action))),
         None => Binding::from_key_press(press),
     }

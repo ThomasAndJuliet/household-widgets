@@ -34,9 +34,10 @@ The text box: "You were asked to implement a input text box. This obviously incl
 | `text_box.replace(text, caret)` | the app's change of the whole text: one step Ctrl+Z takes back |
 | `text_box.amend(text, caret)` | the same change again, part of the last step (the saves of a text open in another editor) |
 | `text_box.replace_with(text, caret, part)` | one step that is more than the text: `part`, the app's own side of it (a card stashed), comes back from `perform` as `Turn::Undone(part)` or `Turn::Redone(part)` for the app to undo or redo; `TextBox<P>` holds parts of type `P` |
-| `text_box.undo_part()`, `text_box.redo_part()`, `text_box.forget_undo()`, `text_box.forget_redo()` | before Undo or Redo, the part it would hand back; if the app can no longer undo or redo it, the history ends there |
+| `text_box.undo_part()`, `text_box.redo_part()`, `text_box.forget_parts()` | before Undo or Redo, the part it would hand back; if the app can no longer undo or redo such parts, the history ends at the nearest of them, the typing between kept |
 | `text_box.can_undo()`, `text_box.can_redo()` | for a menu's Undo and Redo |
 | `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
+| `text_box::standard_keys()` | the keys a text box adds to iced's and what each does, the one list: the key binding goes by it, and an app shows it in its shortcuts and menus |
 | `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
 | `text_box::shift_click(editor, extend)` | round the editor: Shift+click extends the selection |
 
