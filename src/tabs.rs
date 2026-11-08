@@ -194,11 +194,12 @@ pub fn strip<'a, Message: Clone + 'static>(
         assert!(minimum_viewport.is_finite() && minimum_viewport >= 0.0);
     }
     child(move |level| match (overflow, level) {
-        (Overflow::Dropdown, Level::AllPermitted) => {
+        (Overflow::Dropdown, Level::AllPermitted) => widget::container(
             widget::dropdown(&model.names, Some(model.selected), on_select)
-                .text_size(model.font_size)
-                .into()
-        }
+                .text_size(model.font_size),
+        )
+        .height(Length::Fixed(f32::from(model.button_height)))
+        .into(),
         (Overflow::Dropdown, Level::Strong) => Element::new(NamedTabs {
             model,
             on_select,

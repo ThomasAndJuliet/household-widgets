@@ -95,6 +95,24 @@ fn intrinsic_native_sizes_and_viewport_minima_follow_policy_and_font() {
 }
 
 #[test]
+fn dropdown_query_honours_the_native_header_height_contract() {
+    let renderer = renderer();
+    let model = model().button_height(32);
+    let component = strip(&model, Overflow::Dropdown, index);
+    let measured = component.query(Level::AllPermitted, &renderer);
+    assert_eq!(measured.preferred.height, 32.0);
+    assert_eq!(measured.minimum.height, 32.0);
+    let (_, _, node) = laid_out(
+        component,
+        Level::AllPermitted,
+        &renderer,
+        measured.preferred.width,
+        Tree::empty(),
+    );
+    assert_eq!(node.size().height, 32.0);
+}
+
+#[test]
 fn compact_inactive_hover_keeps_its_full_name_in_the_native_tooltip() {
     let renderer = renderer();
     let model = model().button_height(32);
