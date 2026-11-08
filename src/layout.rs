@@ -13,6 +13,7 @@ use cosmic::iced::advanced::widget::{Operation, Tree, tree};
 use cosmic::iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use cosmic::iced::{Event, Length, Rectangle, Size, Vector};
 use cosmic::{Element, Renderer, Theme, widget};
+use std::rc::Rc;
 
 /// The maximum compromise a parent permits its content to make.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -169,6 +170,7 @@ pub fn responsive<'a, Message: 'a>(
         width: Length::Fill,
         height: Length::Shrink,
         content: widget::space().into(),
+        query: None,
     }
 }
 
@@ -179,6 +181,233 @@ pub struct ResponsiveLevels<'a, Message> {
     width: Length,
     height: Length,
     content: Element<'a, Message>,
+    query: Option<SizeQuery<'a>>,
+}
+
+/// Intrinsic content size and the smallest permitted allocated box at one level.
+/// A scrolling viewport can have a smaller minimum than its full content width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredSize {
+    pub preferred: Size,
+    pub minimum: Size,
+}
+
+type SizeQuery<'a> = Rc<dyn Fn(Level, &Renderer) -> MeasuredSize + 'a>;
+
+/// A queryable leaf or composite. Only the root selects a level; composites
+/// query and render every descendant at exactly the level their parent supplies.
+pub struct Child<'a, Message> {
+    view: Rc<dyn Fn(Level) -> Element<'a, Message> + 'a>,
+    query: SizeQuery<'a>,
+    weight: f32,
+}
+
+impl<Message> Clone for Child<'_, Message> {
+    fn clone(&self) -> Self {
+        Self {
+            view: self.view.clone(),
+            query: self.query.clone(),
+            weight: self.weight,
+        }
+    }
+}
+
+impl<'a, Message: 'a> Child<'a, Message> {
+    pub fn view(&self, level: Level) -> Element<'a, Message> {
+        (self.view)(level)
+    }
+    pub fn query(&self, level: Level, renderer: &Renderer) -> MeasuredSize {
+        (self.query)(level, renderer)
+    }
+
+    pub fn weight(mut self, weight: f32) -> Self {
+        assert!(weight.is_finite() && weight >= 0.0);
+        self.weight = weight;
+        self
+    }
+
+    /// The view must remain usable at this width without exceeding its queried
+    /// height. A scrolling viewport satisfies this contract; arbitrary wrapping
+    /// text needs its own height-aware query instead of this width-only override.
+    pub fn minimum_width(mut self, minimum: impl Fn(Level, Size) -> f32 + 'a) -> Self {
+        let query = self.query.clone();
+        self.query = Rc::new(move |level, renderer| {
+            let mut measured = query(level, renderer);
+            measured.minimum.width =
+                minimum(level, measured.preferred).clamp(0.0, measured.preferred.width);
+            measured
+        });
+        self
+    }
+}
+
+/// A native leaf measured with fresh, isolated state on every query.
+pub fn child<'a, Message: 'a>(
+    view: impl Fn(Level) -> Element<'a, Message> + 'a,
+) -> Child<'a, Message> {
+    let view: Rc<dyn Fn(Level) -> Element<'a, Message> + 'a> = Rc::new(view);
+    let measure = view.clone();
+    Child {
+        view,
+        query: Rc::new(move |level, renderer| {
+            let size = measure_element(|| measure(level), renderer);
+            MeasuredSize {
+                preferred: size,
+                minimum: size,
+            }
+        }),
+        weight: 1.0,
+    }
+}
+
+/// Compose a row that remains queryable at a parent-supplied fixed level.
+pub fn row_child<'a, Message: 'a>(
+    children: Vec<Child<'a, Message>>,
+    spacing: f32,
+) -> Child<'a, Message> {
+    assert!(spacing.is_finite() && spacing >= 0.0);
+    let measured_children = children.clone();
+    Child {
+        view: Rc::new(move |level| {
+            Element::new(FixedRow {
+                children: children.clone(),
+                level,
+                spacing,
+                content: widget::space().into(),
+            })
+        }),
+        query: Rc::new(move |level, renderer| {
+            let gap = spacing * measured_children.len().saturating_sub(1) as f32;
+            let mut result = MeasuredSize {
+                preferred: Size::new(gap, 0.0),
+                minimum: Size::new(gap, 0.0),
+            };
+            for child in &measured_children {
+                let size = child.query(level, renderer);
+                result.preferred.width += size.preferred.width;
+                result.preferred.height = result.preferred.height.max(size.preferred.height);
+                result.minimum.width += if child.weight == 0.0 {
+                    size.preferred.width
+                } else {
+                    size.minimum.width
+                };
+                result.minimum.height = result.minimum.height.max(size.minimum.height);
+            }
+            result
+        }),
+        weight: 1.0,
+    }
+}
+
+/// Select one level for an entire recursive composition, then allocate widths.
+pub fn responsive_child<'a, Message: 'a>(
+    max_level: Level,
+    child: Child<'a, Message>,
+) -> ResponsiveLevels<'a, Message> {
+    let query = child.query.clone();
+    let mut responsive = responsive(max_level, move |level| (child.view)(level));
+    responsive.query = Some(query);
+    responsive
+}
+
+pub fn row<'a, Message: 'a>(
+    max_level: Level,
+    children: Vec<Child<'a, Message>>,
+    spacing: f32,
+) -> ResponsiveLevels<'a, Message> {
+    responsive_child(max_level, row_child(children, spacing))
+}
+
+struct FixedRow<'a, Message> {
+    children: Vec<Child<'a, Message>>,
+    level: Level,
+    spacing: f32,
+    content: Element<'a, Message>,
+}
+
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for FixedRow<'a, Message> {
+    forward_widget!(Message, Theme, Renderer; draw, update, operate, mouse_interaction, overlay, drag_destinations);
+
+    fn diff(&mut self, _tree: &mut Tree) {}
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Shrink, Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let measurements: Vec<_> = self
+            .children
+            .iter()
+            .map(|child| child.query(self.level, renderer))
+            .collect();
+        let capacities: Vec<_> = self
+            .children
+            .iter()
+            .zip(&measurements)
+            .map(|(child, size)| WidthCapacity {
+                preferred: size.preferred.width,
+                minimum: size.minimum.width,
+                weight: child.weight,
+            })
+            .collect();
+        let available = (limits.max().width
+            - self.spacing * self.children.len().saturating_sub(1) as f32)
+            .max(0.0);
+        let widths = if available.is_infinite() {
+            capacities
+                .iter()
+                .map(|capacity| capacity.preferred)
+                .collect()
+        } else {
+            allocate_width(available, &capacities).unwrap_or_else(|_| {
+                capacities
+                    .iter()
+                    .map(|capacity| {
+                        if capacity.weight == 0.0 {
+                            capacity.preferred
+                        } else {
+                            capacity.minimum
+                        }
+                    })
+                    .collect()
+            })
+        };
+        self.content = widget::row::with_children(
+            self.children
+                .iter()
+                .zip(widths)
+                .map(|(child, width)| {
+                    widget::container((child.view)(self.level))
+                        .width(Length::Fixed(width))
+                        .into()
+                })
+                .collect::<Vec<Element<'_, Message>>>(),
+        )
+        .spacing(self.spacing)
+        .align_y(cosmic::iced::Alignment::Center)
+        .into();
+        tree.diff_children(std::slice::from_mut(&mut self.content));
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    #[cfg(feature = "a11y")]
+    fn a11y_nodes(
+        &self,
+        layout: Layout<'_>,
+        tree: &Tree,
+        cursor: mouse::Cursor,
+    ) -> iced_accessibility::A11yTree {
+        self.content
+            .as_widget()
+            .a11y_nodes(layout, &tree.children[0], cursor)
+    }
 }
 
 impl<Message> ResponsiveLevels<'_, Message> {
@@ -203,6 +432,24 @@ fn isolate_named_state() -> impl Drop {
     NamedStateGuard(Some(move || {
         tree::NAMED.with(|named| *named.borrow_mut() = saved)
     }))
+}
+
+pub(crate) fn measure_element<'a, Message>(
+    view: impl FnOnce() -> Element<'a, Message>,
+    renderer: &Renderer,
+) -> Size {
+    let _isolation = isolate_named_state();
+    let mut candidate = view();
+    let mut tree = Tree::new(candidate.as_widget());
+    tree.diff(candidate.as_widget_mut());
+    candidate
+        .as_widget_mut()
+        .layout(
+            &mut tree,
+            renderer,
+            &layout::Limits::with_compression(Size::ZERO, Size::INFINITE, Size::new(true, true)),
+        )
+        .size()
 }
 
 impl<F: FnOnce()> Drop for NamedStateGuard<F> {
@@ -231,18 +478,11 @@ impl<Message> Widget<Message, Theme, Renderer> for ResponsiveLevels<'_, Message>
     ) -> layout::Node {
         let limits = limits.width(self.width).height(self.height);
         let available = limits.max();
-        let measurement_limits =
-            layout::Limits::with_compression(Size::ZERO, Size::INFINITE, Size::new(true, true));
         let selected = first_fitting(self.max_level, available, |level| {
-            let _isolation = isolate_named_state();
-            let mut candidate = (self.view)(level);
-            let mut candidate_tree = Tree::new(candidate.as_widget());
-            // Native dropdown initializes its measured paragraphs in diff.
-            candidate_tree.diff(candidate.as_widget_mut());
-            candidate
-                .as_widget_mut()
-                .layout(&mut candidate_tree, renderer, &measurement_limits)
-                .size()
+            self.query.as_ref().map_or_else(
+                || measure_element(|| (self.view)(level), renderer),
+                |query| query(level, renderer).minimum,
+            )
         })
         .unwrap_or(self.max_level);
         self.content = (self.view)(selected);

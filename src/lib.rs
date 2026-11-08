@@ -17,6 +17,7 @@ pub mod layout;
 mod level;
 pub mod menu;
 mod switch;
+pub mod tabs;
 mod text_button;
 pub mod text_menu;
 mod tooltip;

@@ -81,6 +81,40 @@ handling. Native dropdown accessibility and operation support remain limited by
 libcosmic; the adapter forwards the selected control's existing capabilities.
 Enable the shared `a11y` feature when the app enables libcosmic accessibility.
 
+For nested layouts, use `layout::child(view)` for native leaves and
+`layout::row_child(children, spacing)` for composites, then put one
+`layout::responsive_child(max_level, root)` at the root. A `Child` exposes
+`query(level, renderer)` returning preferred and minimum sizes, and `view(level)`
+for that exact level. Every nested row passes the parent's candidate level to
+its descendants; only the root chooses a level. Rows allocate their measured
+child boxes with the shared capacity allocator. `.weight(0.0)` protects a fixed
+control's preferred width. `.minimum_width(..)` is for views such as scrolling
+viewports that remain usable at their queried height when width shrinks.
+
+`tabs::Model::new(items, selected)` owns stable native tab entities and an ID.
+Each `tabs::Tab` supplies its label and icon. Keep the model's selection derived
+from the app's canonical section by calling `select(index)` whenever it changes.
+`tabs::strip(&model, policy, on_select_index)` returns one queryable child; its
+parent knows no tab labels or icons. The default height is 44; use
+`.button_height(32)` for a native header slot, or `.font_size(..)` for other live
+typography. Measurements, rendering, hover names and selection reveal use the
+same native tab builder and actual renderer.
+
+`tabs::Overflow::Dropdown` uses labels at levels 0/1, the active label and icons
+at 2, and a named dropdown at 3. Inactive compact tabs keep native hover tooltips;
+the shared presentation wrapper delegates tab events and keyboard operations.
+`Overflow::Scroll { minimum_viewport }` keeps all labels and permits a scrolling
+viewport from level 1. Its minimum viewport is distinct from its full content
+width. The native floating scrollbar stays visible when applicable. Selection
+changes and viewport resizing reveal the selected tab using measured native tab
+bounds, while ordinary manual scrolling is retained. The native tab style is
+the terminal's TabBar style with plain inactive title colours on hover and press.
+Native segmented tabs currently expose no accessibility nodes or per-item name
+API; that upstream limitation also applies through this component.
+Native keyboard navigation remains delegated; revealing an offscreen focused
+tab before activation needs a native focus-bounds hook that libcosmic does not
+currently expose. Selecting it reveals it through the normal selection path.
+
 ## Depending on it
 
 ```toml

@@ -56,6 +56,48 @@ fn capacity(preferred: f32, minimum: f32, weight: f32) -> WidthCapacity {
 }
 
 #[test]
+fn three_nested_rows_query_and_commit_one_parent_selected_level() {
+    let renderer = renderer();
+    let committed = Rc::new(Cell::new(Level::AllPermitted));
+    let observed = committed.clone();
+    let flexible: Child<'_, u8> = child(move |level| {
+        observed.set(level);
+        widget::Space::new().width(160.0).height(20.0).into()
+    })
+    .minimum_width(|level, preferred| {
+        if level >= Level::Mild {
+            60.0
+        } else {
+            preferred.width
+        }
+    });
+    let fixed = || child(|_| widget::Space::new().width(10.0).height(20.0).into()).weight(0.0);
+    let inner = row_child(vec![flexible, fixed()], 0.0);
+    let middle = row_child(vec![inner, fixed()], 0.0);
+    let outer = row_child(vec![middle, fixed()], 0.0);
+    assert_eq!(
+        outer.query(Level::Preferred, &renderer).minimum.width,
+        190.0
+    );
+    assert_eq!(outer.query(Level::Mild, &renderer).minimum.width, 90.0);
+    let mut widget = responsive_child(Level::AllPermitted, outer);
+    let mut tree = Tree::empty();
+    let node = widget.layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(100.0, 40.0)),
+    );
+    assert_eq!(committed.get(), Level::Mild);
+    assert_eq!(node.size().width, 100.0);
+    let _ = widget.layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(220.0, 40.0)),
+    );
+    assert_eq!(committed.get(), Level::Preferred);
+}
+
+#[test]
 fn capacity_sharing_uses_original_rates_clamps_and_protects_zero_weight() {
     let children = [
         capacity(100.0, 80.0, 3.0),
@@ -107,8 +149,16 @@ fn rebuild(
     width: f32,
     view: impl Fn(Level) -> Element<'static, u8> + 'static,
 ) -> (ResponsiveLevels<'static, u8>, layout::Node) {
+    reconcile(tree, renderer, width, responsive(Level::AllPermitted, view))
+}
+
+fn reconcile(
+    tree: &mut Tree,
+    renderer: &Renderer,
+    width: f32,
+    mut widget: ResponsiveLevels<'static, u8>,
+) -> (ResponsiveLevels<'static, u8>, layout::Node) {
     tree::NAMED.with(|named| *named.borrow_mut() = tree.take_all_named());
-    let mut widget = responsive(Level::AllPermitted, view);
     tree.diff(&mut widget as &mut dyn Widget<u8, Theme, Renderer>);
     let node = widget.layout(
         tree,
@@ -326,6 +376,32 @@ fn native_dropdown_stays_open_on_same_form_resize_and_drops_with_replacement() {
         ),
         vec![7]
     );
+}
+
+#[test]
+fn recursive_row_keeps_native_dropdown_open_on_rebuild_at_the_same_constraint() {
+    let renderer = renderer();
+    let mut tree = Tree::empty();
+    let root = || {
+        responsive_child(
+            Level::AllPermitted,
+            row_child(vec![child(dropdown_or_row)], 0.0),
+        )
+    };
+    let (mut widget, node) = reconcile(&mut tree, &renderer, 200.0, root());
+    assert!(
+        event(
+            &mut widget,
+            &mut tree,
+            &node,
+            &renderer,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+        )
+        .is_empty()
+    );
+    assert!(has_overlay(&mut widget, &mut tree, &node, &renderer));
+    let (mut widget, node) = reconcile(&mut tree, &renderer, 200.0, root());
+    assert!(has_overlay(&mut widget, &mut tree, &node, &renderer));
 }
 
 #[cfg(feature = "a11y")]
