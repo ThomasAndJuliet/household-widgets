@@ -9,10 +9,9 @@ use cosmic::widget::segmented_button::{Entity, SingleSelectModel};
 use cosmic::{Element, Renderer, Theme, widget};
 
 use crate::layout::{Child, Level, child, measure_element};
+use crate::scroll::{SCROLLBAR_GAP, SCROLLBAR_WIDTH};
 
 const ICON_TEXT_GAP: u16 = 8;
-const SCROLLBAR_WIDTH: f32 = 8.0;
-const SCROLLBAR_GAP: f32 = 2.0;
 
 #[derive(Clone)]
 pub struct Tab {

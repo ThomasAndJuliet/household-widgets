@@ -19,6 +19,7 @@ mod forward;
 pub mod layout;
 mod level;
 pub mod menu;
+mod scroll;
 mod switch;
 pub mod tabs;
 
@@ -28,6 +29,7 @@ pub mod text_menu;
 mod tooltip;
 
 pub use level::{LEVEL_CAP, Level};
+pub use scroll::horizontal_scroll;
 pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 pub use text_box::TextBox;
 pub use text_button::{BUTTON_HEIGHT, Tertiary, TextButton, button_padding};

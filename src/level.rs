@@ -80,8 +80,36 @@ mod widget_impl {
 
     use super::{LEVEL_CAP, Level, first_lines};
 
+    // Allocation containers and forwarding adapters can sit between the row
+    // slot and its native label column. Horizontal reservation or translation
+    // does not change the first-lines band. Descend through a single child only
+    // when its vertical origin and height are unchanged; vertical padding,
+    // translation and actual nested layouts stay opaque.
+    fn text_content(mut node: &layout::Node) -> &layout::Node {
+        while let [child] = node.children() {
+            let bounds = child.bounds();
+            if bounds.y.abs() > 0.001 || (child.size().height - node.size().height).abs() > 0.001 {
+                break;
+            }
+            node = child;
+        }
+        node
+    }
+
     impl<M> Widget<M, cosmic::Theme, Renderer> for Level<'_, M> {
         forward_widget!(M, cosmic::Theme, Renderer; children, diff, size, operate, update, draw, mouse_interaction, overlay, drag_destinations);
+
+        #[cfg(feature = "a11y")]
+        fn a11y_nodes(
+            &self,
+            layout: Layout<'_>,
+            tree: &Tree,
+            cursor: mouse::Cursor,
+        ) -> iced_accessibility::A11yTree {
+            self.content
+                .as_widget()
+                .a11y_nodes(layout, &tree.children[0], cursor)
+        }
 
         fn layout(
             &mut self,
@@ -106,7 +134,7 @@ mod widget_impl {
                 return node;
             }
             // The label and description, or a label alone
-            let first = match children[at].children() {
+            let first = match text_content(&children[at]).children() {
                 [label, description] => {
                     let (label, description) = (label.bounds(), description.bounds());
                     let gap = (description.y - (label.y + label.height)).max(0.0);
@@ -122,12 +150,9 @@ mod widget_impl {
             };
             let band = first.min(text.height).max(control.height);
             children[n - 1].move_to_mut(Point::new(control.x, (band - control.height) / 2.0));
-            let height = children
-                .iter()
-                .map(|c| c.bounds().y + c.bounds().height)
-                .fold(0.0, f32::max);
-            layout::Node::with_children(Size::new(node.size().width, height), children)
-                .move_to(node.bounds().position())
+            // Alignment is internal to the existing row box. In particular,
+            // moving a tall control must not change the parent's requirements.
+            layout::Node::with_children(node.size(), children).move_to(node.bounds().position())
         }
     }
 }

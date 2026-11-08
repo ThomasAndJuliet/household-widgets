@@ -217,6 +217,7 @@ struct Composition<'a, Message> {
 }
 
 type Forms<'a, Message> = Rc<Vec<(Level, Child<'a, Message>)>>;
+type ViewMap<'a, Message> = Rc<dyn Fn(Element<'a, Message>) -> Element<'a, Message> + 'a>;
 
 /// A queryable leaf or composite. Only the root selects a level. Composites
 /// forward that exact level; outward weights never replace internal weights.
@@ -225,6 +226,7 @@ pub struct Child<'a, Message> {
     query: SizeQuery<'a>,
     composition: Option<Rc<Composition<'a, Message>>>,
     forms: Option<Forms<'a, Message>>,
+    decorator: Option<ViewMap<'a, Message>>,
     hidden: Rc<dyn Fn(Level) -> bool + 'a>,
     viewport: Option<Size>,
     weight: f32,
@@ -239,6 +241,7 @@ impl<Message> Clone for Child<'_, Message> {
             query: self.query.clone(),
             composition: self.composition.clone(),
             forms: self.forms.clone(),
+            decorator: self.decorator.clone(),
             hidden: self.hidden.clone(),
             viewport: self.viewport,
             weight: self.weight,
@@ -279,8 +282,9 @@ impl<'a, Message: 'a> Child<'a, Message> {
         }
         // Preserve the native leaf's public tree identity for direct consumers
         // such as tab strips. Root stage commits use render/VerifiedLeaf; only
-        // composites need this fixed-level allocation adapter here.
-        if self.composition.is_none() && self.forms.is_none() {
+        // composites and explicitly decorated leaves need this fixed-level
+        // allocation adapter here.
+        if self.composition.is_none() && self.forms.is_none() && self.decorator.is_none() {
             return (self.view)(level);
         }
         Element::new(FixedComponent {
@@ -420,6 +424,32 @@ impl<'a, Message: 'a> Child<'a, Message> {
         if plan.hidden {
             return widget::space().width(0).height(0).into();
         }
+        let content = self.render_content(level, plan, agreement.clone());
+        match &self.decorator {
+            Some(decorate) => {
+                let content = Element::new(VerifiedDecoration {
+                    content,
+                    expected: plan.size,
+                    agreement: agreement.clone(),
+                    check_constraints: true,
+                });
+                Element::new(VerifiedDecoration {
+                    content: decorate(content),
+                    expected: plan.size,
+                    agreement,
+                    check_constraints: false,
+                })
+            }
+            None => content,
+        }
+    }
+
+    fn render_content(
+        &self,
+        level: Level,
+        plan: &GeometryPlan,
+        agreement: Rc<Cell<bool>>,
+    ) -> Element<'a, Message> {
         if let Some(form) = self.selected_form(level) {
             let mut selected = form.clone();
             if self.grow_height > 0.0 {
@@ -518,6 +548,23 @@ impl<'a, Message: 'a> Child<'a, Message> {
         }
     }
 
+    /// Decorate this component's rendered content without changing its geometry.
+    /// Useful ranges, structured forms and exact-level queries stay unchanged.
+    /// Apply only styling or alignment inside the existing component box: no
+    /// padding, size changes or overflow. Native commits verify the decorated
+    /// size and reject a disagreeing stage. Factories and decorators must be
+    /// free of application side effects. Hidden forms are never decorated.
+    pub fn map_view(
+        mut self,
+        decorate: impl Fn(Element<'a, Message>) -> Element<'a, Message> + 'a,
+    ) -> Self {
+        self.decorator = Some(match self.decorator.take() {
+            Some(previous) => Rc::new(move |content| decorate(previous(content))),
+            None => Rc::new(decorate),
+        });
+        self
+    }
+
     pub fn weight(mut self, weight: f32) -> Self {
         assert!(weight.is_finite() && weight >= 0.0);
         self.weight = weight;
@@ -557,19 +604,28 @@ impl<'a, Message: 'a> Child<'a, Message> {
         self
     }
 
-    /// Declare a usable allocated width. Native content is measured again at
-    /// that width, so wrapping text contributes its actual resulting height.
-    /// The component is responsible for making the narrower form usable.
+    /// Declare a finite, nonnegative useful width floor. If native intrinsic
+    /// width is smaller (including an all-Fill subtree reporting zero), the
+    /// preferred offer is raised to the floor. Native content is measured again
+    /// at its allocated width, including the actual height of wrapping text.
+    /// The component is responsible for making that form usable.
     pub fn minimum_width(mut self, minimum: impl Fn(Level, Size) -> f32 + 'a) -> Self {
         let query = self.query.clone();
         self.query = Rc::new(move |level, renderer| {
             let mut measured = query(level, renderer);
-            measured.minimum.width =
-                if measured.preferred.width.is_finite() && measured.preferred.width >= 0.0 {
-                    minimum(level, measured.preferred).clamp(0.0, measured.preferred.width)
+            if measured.preferred.width.is_finite() && measured.preferred.width >= 0.0 {
+                let floor = minimum(level, measured.preferred);
+                if floor.is_finite() && floor >= 0.0 {
+                    // An all-Fill native subtree can have no intrinsic width.
+                    // Its explicit useful floor still applies to both offers.
+                    measured.minimum.width = floor;
+                    measured.preferred.width = measured.preferred.width.max(floor);
                 } else {
-                    f32::NAN
-                };
+                    measured.minimum.width = f32::NAN;
+                }
+            } else {
+                measured.minimum.width = f32::NAN;
+            }
             measured
         });
         self
@@ -592,6 +648,7 @@ pub fn child<'a, Message: 'a>(
         }),
         composition: None,
         forms: None,
+        decorator: None,
         hidden: Rc::new(|_| false),
         viewport: None,
         weight: 1.0,
@@ -623,6 +680,7 @@ pub fn forms<'a, Message: 'a>(
         }),
         composition: None,
         forms: Some(alternatives),
+        decorator: None,
         hidden: Rc::new(|_| false),
         viewport: None,
         weight: 1.0,
@@ -723,6 +781,7 @@ fn compose<'a, Message: 'a>(
         query: Rc::new(move |level, renderer| query.measure(level, renderer)),
         composition: Some(composition),
         forms: None,
+        decorator: None,
         hidden: Rc::new(|_| false),
         viewport: None,
         weight: 1.0,
@@ -1174,6 +1233,63 @@ impl<'a, Message: 'a> ResponsiveLevels<'a, Message> {
     }
 }
 
+// A component decorator may contain a whole nested composition. Validate its
+// own box before the parent's fixed slot could conceal a changed requirement.
+struct VerifiedDecoration<'a, Message> {
+    content: Element<'a, Message>,
+    expected: Size,
+    agreement: Rc<Cell<bool>>,
+    check_constraints: bool,
+}
+impl<Message> Widget<Message, Theme, Renderer> for VerifiedDecoration<'_, Message> {
+    forward_widget!(Message, Theme, Renderer; children, diff, size, draw, update, operate, mouse_interaction, overlay, drag_destinations);
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let limits = if self.check_constraints {
+            // Padding or a smaller explicit size must not conceal overflow by
+            // reducing the raw component's already allocated box.
+            if limits.max().width + FIT_EPSILON < self.expected.width
+                || limits.max().height + FIT_EPSILON < self.expected.height
+            {
+                self.agreement.set(false);
+            }
+            *limits
+        } else {
+            layout::Limits::with_compression(
+                Size::ZERO,
+                Size::new(self.expected.width, f32::INFINITY),
+                Size::new(true, true),
+            )
+        };
+        let node = self
+            .content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, &limits);
+        if !finite_size(node.size())
+            || (node.size().width - self.expected.width).abs() > FIT_EPSILON
+            || (node.size().height - self.expected.height).abs() > FIT_EPSILON
+        {
+            self.agreement.set(false);
+        }
+        node
+    }
+    #[cfg(feature = "a11y")]
+    fn a11y_nodes(
+        &self,
+        layout: Layout<'_>,
+        tree: &Tree,
+        cursor: mouse::Cursor,
+    ) -> iced_accessibility::A11yTree {
+        self.content
+            .as_widget()
+            .a11y_nodes(layout, &tree.children[0], cursor)
+    }
+}
+
 struct VerifiedLeaf<'a, Message> {
     content: Element<'a, Message>,
     expected: Size,
@@ -1190,7 +1306,7 @@ impl<Message> Widget<Message, Theme, Renderer> for VerifiedLeaf<'_, Message> {
             &layout::Limits::with_compression(
                 Size::ZERO,
                 self.maximum,
-                Size::new(true, self.compress_height),
+                Size::new(self.maximum.width.is_infinite(), self.compress_height),
             ),
         );
         if !finite_size(node.size())
@@ -1291,6 +1407,8 @@ fn measure_element_in<'a, Message>(
     maximum: Size,
     compress_height: bool,
 ) -> Size {
+    // Only an unbounded intrinsic probe compresses Fill widths. At an
+    // allocated finite width, native Fill columns must consume that offer.
     let _isolation = isolate_named_state();
     let mut candidate = view();
     let mut tree = Tree::new(candidate.as_widget());
@@ -1303,7 +1421,7 @@ fn measure_element_in<'a, Message>(
             &layout::Limits::with_compression(
                 Size::ZERO,
                 maximum,
-                Size::new(true, compress_height),
+                Size::new(maximum.width.is_infinite(), compress_height),
             ),
         )
         .size()
@@ -1547,3 +1665,7 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "layout_engine_tests.rs"]
 mod engine_tests;
+
+#[cfg(test)]
+#[path = "layout_decorator_tests.rs"]
+mod decorator_tests;
