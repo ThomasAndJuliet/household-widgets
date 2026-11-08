@@ -5,19 +5,16 @@ name: CI
 # Where it runs depends on who started it. Pushes to this repository,
 # same-repository pull requests and manual runs are trusted: they run on the
 # household's self-hosted runner (`neo-ubuntu`), or on a GitHub-hosted one when
-# the CI_RUNNER variable is "hosted", and may use the deploy-key secrets below.
+# the CI_RUNNER variable is "hosted".
 # A pull request from a fork is not trusted: it runs on a GitHub-hosted runner
 # with a read-only token, receives no secrets, and never reaches a self-hosted
 # runner. This workflow uses `pull_request`, never `pull_request_target`.
 #
 # The crate is built against the household libcosmic fork at the revision in
-# Cargo.toml's [patch], and household-tones from household-kit. While those
-# repositories are private they are fetched over ssh with the secrets
-# LIBCOSMIC_DEPLOY_KEY and HOUSEHOLD_KIT_DEPLOY_KEY, the private halves of
-# their read-only deploy keys; a fork pull request cannot fetch them and
-# fails at the fetch until the dependencies are public and fetched over https.
-# The [patch] is for this build only; an app that depends on
-# household-widgets builds it with the app's own libcosmic.
+# Cargo.toml's [patch], and household-tones from household-kit, both fetched
+# over https from public repositories, so no secret is needed. The [patch] is
+# for this build only; an app that depends on household-widgets builds it with
+# the app's own libcosmic.
 on:
   push:
   pull_request:
@@ -52,12 +49,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libinput-dev libudev-dev libdbus-1-dev
-      - name: Let git and cargo fetch the household libcosmic fork and household-kit
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          LIBCOSMIC_DEPLOY_KEY: ${{ secrets.LIBCOSMIC_DEPLOY_KEY }}
-          HOUSEHOLD_KIT_DEPLOY_KEY: ${{ secrets.HOUSEHOLD_KIT_DEPLOY_KEY }}
-        run: scripts/ci-private-crates.sh libcosmic household-kit
       - name: Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Default tests

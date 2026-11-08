@@ -220,7 +220,7 @@ A new draft is a new `TextBox` (the terminal's prompt, once sent). The history k
 ## Depending on it
 
 ```toml
-household-widgets = { git = "ssh://git@github.com/ThomasAndJuliet/household-widgets.git" }
+household-widgets = { git = "https://github.com/ThomasAndJuliet/household-widgets.git" }
 ```
 
 The crate depends on libcosmic as an app does, by upstream's URL with no rev:
@@ -233,7 +233,7 @@ Every household app has `[patch."https://github.com/pop-os/libcosmic.git"]` poin
 
 This repository's own `Cargo.toml` has a `[patch]` for its tests, Clippy and CI. Apps using `TextMenu` must pin a compatible household libcosmic revision providing the native text target and session interfaces. This crate is tested against `dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc`, which includes the native editing, popup and named-selection fixes; older fork revisions lack these interfaces or fixes. Cargo reads `[patch]` only from the workspace being built, so each app chooses its own compatible fork revision.
 
-Until this repository is public, an app's CI needs its own read key for it, `HOUSEHOLD_WIDGETS_DEPLOY_KEY`, with a line for it in that app's `scripts/ci-private-crates.sh`. A Flatpak app needs the crate in its `cargo-sources.json`.
+A Flatpak app needs the crate in its `cargo-sources.json`.
 
 ## Adding a widget
 
@@ -252,9 +252,7 @@ cargo test --locked
 cargo test --all-features --locked
 ```
 
-The household libcosmic fork and household-kit are private repositories while this one is public, so building needs read access to them over ssh until the dependencies are public too (see `Cargo.toml`).
-
-`.github/workflows/ci.yml` runs those four commands. Pushes to this repository, same-repository pull requests and manual runs use the household's self-hosted runner (or a GitHub-hosted one when the `CI_RUNNER` variable is `hosted`) and fetch the private crates with `scripts/ci-private-crates.sh`, so the repository needs two secrets, the private halves of read-only deploy keys: `LIBCOSMIC_DEPLOY_KEY` for the fork and `HOUSEHOLD_KIT_DEPLOY_KEY` for household-kit. Pull requests from forks run on a GitHub-hosted runner with a read-only token and no secrets, and never on the self-hosted runner.
+`.github/workflows/ci.yml` runs those four commands. Pushes to this repository, same-repository pull requests and manual runs use the household's self-hosted runner (or a GitHub-hosted one when the `CI_RUNNER` variable is `hosted`). Pull requests from forks run on a GitHub-hosted runner with a read-only token and never on the self-hosted runner. No secret is used.
 
 ## Licence
 
