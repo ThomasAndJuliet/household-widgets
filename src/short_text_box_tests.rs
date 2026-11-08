@@ -1091,3 +1091,26 @@ fn each_kind_of_text_box_has_its_border_width() {
     assert_eq!(width(&looked(Kind::NormalField, Is::Focused, &theme)), 2);
     assert_eq!(width(&looked(Kind::NormalEditor, Is::Focused, &theme)), 2);
 }
+
+/// A prominent box in a window behind others fades its own window's accent,
+/// not the accent of the theme it is drawn in (the window in front's)
+#[test]
+fn a_prominent_box_behind_fades_its_own_windows_accent() {
+    let theme = Theme::dark();
+    let own = Color::from_rgb8(0xd0, 0x63, 0x63);
+    let look = Look::prominent().behind(true).accent(own);
+    let border = look.border(&theme, crate::look::State::Focused).color;
+    let page = household_tones::Srgb::hex(0x1b1b1b);
+    let rgba = |c: Color| household_tones::Srgba::new(c.r, c.g, c.b, c.a);
+    let rest = household_tones::DARK_REST_BORDER.with_alpha(1.0);
+    let want = household_tones::faded_accent(rgba(own), rest, page);
+    assert_eq!(hex(rgb8(border)), want.to_hex());
+    let front = Look::prominent().accent(own);
+    assert_eq!(
+        hex(rgb8(
+            front.border(&theme, crate::look::State::Focused).color
+        )),
+        "#d06363",
+        "in front, its own accent"
+    );
+}
