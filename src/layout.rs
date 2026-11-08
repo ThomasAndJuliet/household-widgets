@@ -200,6 +200,7 @@ pub struct Child<'a, Message> {
     view: Rc<dyn Fn(Level) -> Element<'a, Message> + 'a>,
     query: SizeQuery<'a>,
     weight: f32,
+    grow: f32,
 }
 
 impl<Message> Clone for Child<'_, Message> {
@@ -208,6 +209,7 @@ impl<Message> Clone for Child<'_, Message> {
             view: self.view.clone(),
             query: self.query.clone(),
             weight: self.weight,
+            grow: self.grow,
         }
     }
 }
@@ -223,6 +225,13 @@ impl<'a, Message: 'a> Child<'a, Message> {
     pub fn weight(mut self, weight: f32) -> Self {
         assert!(weight.is_finite() && weight >= 0.0);
         self.weight = weight;
+        self
+    }
+
+    /// Share surplus space after preferred widths fit. Zero keeps intrinsic width.
+    pub fn grow(mut self, grow: f32) -> Self {
+        assert!(grow.is_finite() && grow >= 0.0);
+        self.grow = grow;
         self
     }
 
@@ -257,6 +266,22 @@ pub fn child<'a, Message: 'a>(
             }
         }),
         weight: 1.0,
+        grow: 0.0,
+    }
+}
+
+/// An elastic gap with a fixed minimum and a share of surplus space.
+/// It reports its minimum during queries; the parent allocates its rendered width.
+pub fn spacer<'a, Message: 'a>(minimum: f32) -> Child<'a, Message> {
+    assert!(minimum.is_finite() && minimum >= 0.0);
+    Child {
+        view: Rc::new(|_| widget::Space::new().width(Length::Fill).height(0).into()),
+        query: Rc::new(move |_, _| MeasuredSize {
+            preferred: Size::new(minimum, 0.0),
+            minimum: Size::new(minimum, 0.0),
+        }),
+        weight: 0.0,
+        grow: 1.0,
     }
 }
 
@@ -296,6 +321,7 @@ pub fn row_child<'a, Message: 'a>(
             result
         }),
         weight: 1.0,
+        grow: 0.0,
     }
 }
 
@@ -358,7 +384,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for FixedRow<'a, Message>
         let available = (limits.max().width
             - self.spacing * self.children.len().saturating_sub(1) as f32)
             .max(0.0);
-        let widths = if available.is_infinite() {
+        let mut widths: Vec<f32> = if available.is_infinite() {
             capacities
                 .iter()
                 .map(|capacity| capacity.preferred)
@@ -377,6 +403,18 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for FixedRow<'a, Message>
                     .collect()
             })
         };
+        let total_grow: f64 = self
+            .children
+            .iter()
+            .map(|child| f64::from(child.grow))
+            .sum();
+        if available.is_finite() && total_grow > 0.0 {
+            let used: f64 = widths.iter().map(|width| f64::from(*width)).sum();
+            let surplus = (f64::from(available) - used).max(0.0);
+            for (width, child) in widths.iter_mut().zip(&self.children) {
+                *width += (surplus * f64::from(child.grow) / total_grow) as f32;
+            }
+        }
         self.content = widget::row::with_children(
             self.children
                 .iter()

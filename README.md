@@ -32,7 +32,12 @@ hidden. An app supplies its body-text element to `tooltip_with`, and can use
 
 `TextButton<M>` and `Tertiary<M>` own the text, icon, row and button layout for
 the household's three button levels. An app passes its `theme::Button` class,
-so its palette and any faded-window state remain under its control. `Level<M>`
+so its palette and any faded-window state remain under its control. `Tertiary`
+accepts `.leading_element(element)` for a custom mark (which takes precedence
+over `.leading_icon(...)`), `.height(32.0)` for a 32 px target, and
+`.icon_only(true)` for a square target showing only that leading mark. Its
+original label remains the native accessible name when the `a11y` feature is
+enabled. The default height and labelled layout remain unchanged. `Level<M>`
 aligns a settings-row control with the first two text lines; its body-line
 callback is read during layout, so a changed interface size takes effect.
 
@@ -184,3 +189,9 @@ Neo cannot fetch the private repositories over ssh, so the revisions in `Cargo.l
 ## Licence
 
 GPL-3.0-only, because the code comes from Cerea, which is under that licence.
+
+`layout::spacer(minimum)` reports a fixed minimum gap during queries and grows
+into remaining row space. `Child::grow(weight)` shares surplus after preferred
+widths fit; it is independent of the shrink weight. Nested components remain
+explicit: give a composite a grow weight when its parent should offer it extra
+space. An expanding gap therefore needs no application-specific width estimate.

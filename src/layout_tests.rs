@@ -417,3 +417,48 @@ fn accessibility_forwards_only_the_selected_native_button() {
     let nodes = widget.a11y_nodes(Layout::new(&node), &tree, mouse::Cursor::Unavailable);
     assert_eq!(nodes.root().len(), 1);
 }
+
+#[test]
+fn elastic_gap_is_measured_at_its_minimum_and_keeps_actions_at_the_right() {
+    let renderer = renderer();
+    let fixed = |width| child(move |_| widget::Space::new().width(width).height(32).into());
+    let component: Child<'_, u8> = row_child(vec![fixed(40.0), spacer(8.0), fixed(32.0)], 0.0);
+    assert_eq!(
+        component.query(Level::Preferred, &renderer).minimum.width,
+        80.0
+    );
+    let mut root = responsive_child(Level::AllPermitted, component);
+    let mut tree = Tree::empty();
+    for width in [200.0, 80.0] {
+        let node = root.layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(width, 32.0)),
+        );
+        let row = &node.children()[0];
+        assert_eq!(row.children()[0].size().width, 40.0);
+        assert_eq!(row.children()[2].size().width, 32.0);
+        assert_eq!(row.children()[2].bounds().x, width - 32.0);
+        assert_eq!(row.children()[1].size().width, width - 72.0);
+    }
+}
+
+#[test]
+fn surplus_shares_follow_grow_weights_without_changing_intrinsic_queries() {
+    let renderer = renderer();
+    let component: Child<'_, u8> =
+        row_child(vec![spacer(4.0).grow(1.0), spacer(8.0).grow(3.0)], 0.0);
+    assert_eq!(
+        component.query(Level::Preferred, &renderer).minimum.width,
+        12.0
+    );
+    let mut root = responsive_child(Level::AllPermitted, component);
+    let mut tree = Tree::empty();
+    let node = root.layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(52.0, 32.0)),
+    );
+    assert_eq!(node.children()[0].children()[0].size().width, 14.0);
+    assert_eq!(node.children()[0].children()[1].size().width, 38.0);
+}

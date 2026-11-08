@@ -129,10 +129,12 @@ pub struct Tertiary<'a, M> {
     on_press: Option<M>,
     leading: Option<widget::icon::Handle>,
     trailing: Option<widget::icon::Handle>,
+    leading_element: Option<Element<'a, M>>,
+    height: Option<f32>,
+    icon_only: bool,
     width: Length,
     class: theme::Button,
     noop: M,
-    _life: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a, M: Clone> Tertiary<'a, M> {
@@ -142,10 +144,12 @@ impl<'a, M: Clone> Tertiary<'a, M> {
             on_press: None,
             leading: None,
             trailing: None,
+            leading_element: None,
+            height: None,
+            icon_only: false,
             width: Length::Shrink,
             class,
             noop,
-            _life: std::marker::PhantomData,
         }
     }
 
@@ -164,6 +168,30 @@ impl<'a, M: Clone> Tertiary<'a, M> {
         self
     }
 
+    /// Use a custom leading element, in preference to a leading icon handle.
+    pub fn leading_element(mut self, element: Element<'a, M>) -> Self {
+        self.leading_element = Some(element);
+        self
+    }
+
+    /// Set the target height. Icon-only targets use the same width.
+    ///
+    /// Panics if the height is not finite and positive.
+    pub fn height(mut self, height: f32) -> Self {
+        assert!(
+            height.is_finite() && height > 0.0,
+            "height must be finite and positive"
+        );
+        self.height = Some(height);
+        self
+    }
+
+    /// Show only the leading element or icon, retaining the label for accessibility.
+    pub fn icon_only(mut self, icon_only: bool) -> Self {
+        self.icon_only = icon_only;
+        self
+    }
+
     pub fn trailing_icon(mut self, icon: impl Into<widget::icon::Handle>) -> Self {
         self.trailing = Some(icon.into());
         self
@@ -178,35 +206,56 @@ impl<'a, M: Clone> Tertiary<'a, M> {
 impl<'a, M: Clone + 'a> From<Tertiary<'a, M>> for Element<'a, M> {
     fn from(tertiary: Tertiary<'a, M>) -> Self {
         let space = theme::active().cosmic().spacing;
-        let noop = tertiary.noop;
-        let label = cosmic::iced::widget::rich_text([cosmic::iced::widget::span(tertiary.label)
-            .underline(true)
-            .font(cosmic::font::bold())])
-        .size(14.0)
-        .line_height(LineHeight::Absolute(20.0.into()))
-        .on_link_click(move |()| noop.clone());
+        let height = tertiary.height.unwrap_or(f32::from(space.space_l));
+        #[cfg(feature = "a11y")]
+        let accessible_name = tertiary.label.clone();
         let mut parts: Vec<Element<'a, M>> = Vec::with_capacity(3);
-        parts.extend(
+        parts.extend(tertiary.leading_element.or_else(|| {
             tertiary
                 .leading
-                .map(|icon| widget::icon::icon(icon).size(16).into()),
-        );
-        parts.push(label.into());
-        parts.extend(
-            tertiary
-                .trailing
-                .map(|icon| widget::icon::icon(icon).size(16).into()),
-        );
+                .map(|icon| widget::icon::icon(icon).size(16).into())
+        }));
+        if !tertiary.icon_only {
+            let noop = tertiary.noop;
+            let label =
+                cosmic::iced::widget::rich_text([cosmic::iced::widget::span(tertiary.label)
+                    .underline(true)
+                    .font(cosmic::font::bold())])
+                .size(14.0)
+                .line_height(LineHeight::Absolute(20.0.into()))
+                .on_link_click(move |()| noop.clone());
+            parts.push(label.into());
+            parts.extend(
+                tertiary
+                    .trailing
+                    .map(|icon| widget::icon::icon(icon).size(16).into()),
+            );
+        }
         let content = widget::row::with_children(parts)
             .spacing(space.space_xxs)
             .align_y(Alignment::Center)
             .height(Length::Fill);
-        button::custom(content)
+        let button = button::custom(content)
             .class(tertiary.class)
             .padding([space.space_xxxs, space.space_xxs])
-            .height(Length::Fixed(f32::from(space.space_l)))
-            .width(tertiary.width)
-            .on_press_maybe(tertiary.on_press)
-            .into()
+            .height(Length::Fixed(height))
+            .width(if tertiary.icon_only {
+                Length::Fixed(height)
+            } else {
+                tertiary.width
+            })
+            .on_press_maybe(tertiary.on_press);
+        let button = if tertiary.icon_only {
+            button.align_x(Alignment::Center)
+        } else {
+            button
+        };
+        #[cfg(feature = "a11y")]
+        let button = button.name(accessible_name);
+        button.into()
     }
 }
+
+#[cfg(test)]
+#[path = "text_button_tests.rs"]
+mod tests;
