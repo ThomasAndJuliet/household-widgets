@@ -215,13 +215,26 @@ The text box: "You were asked to implement a input text box. This obviously incl
 | `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
 | `text_box::standard_keys()` | the keys a text box adds to iced's and what each does, the one list: the key binding goes by it, and an app shows it in its shortcuts and menus |
 | `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
-| `text_box::editor(&text_box, on_action)` | libcosmic's `text_editor` over the box: its actions, the standard keys, and the colours of a kept selection; set the rest (`.id`, `.placeholder`, `.padding`, an app's own `.key_binding`) on it |
-| `text_box::wrap(content, &text_box, on_action)` | round the editor (and its text menu): Shift+click extends the selection, and the selection kept while the box is unfocused is drawn dimmed |
+| `text_box::editor(&text_box, look, on_action)` | libcosmic's `text_editor` over the box in the household look (`Look::prominent()` or `Look::normal()`, `.behind(window_behind)`): its actions, the standard keys, and the colours of a kept selection; set the rest (`.id`, `.placeholder`, `.padding`, an app's own `.key_binding`) on it, but no style |
+| `text_box::wrap(editor, &text_box, on_action)` | round the editor, or the editor in its text menu, and nothing else (the type allows only those): Shift+click extends the selection, and the selection kept while the box is unfocused is drawn dimmed |
 | `text_box::shift_click(editor, extend)` | Shift+click alone, for a box with an editor of its own |
 
 A new draft is a new `TextBox` (the terminal's prompt, once sent). The history keeps 300 steps and at most 8 MB of text.
 
 **A selection kept while unfocused is drawn dimmed**, as GTK draws a selection in a box that is not the focus: what the menu's Cut and Copy act on is always seen. Neither iced's editor nor libcosmic's input draws a selection without the focus, so `wrap` (and the short text box's widget) draws the box from a second widget tree, its state as when focused, while the box's colours give the kept look: the household's selection tint, the accent at 32 % over the box's background (rule 6, "What is highlighted, and how"), with the box's text colour moved only as far as the fill rule needs (`household_tones::on_tint`), in place of the solid accent of a box being typed into. `text_box::kept_selection_colours(theme, text, beneath)` gives the pair. Nothing of libcosmic changes.
+
+### The look: two kinds of text box
+
+Household rule 25a (Juliet, 8 Nov 2026, from the sheet in household-ui `sheets/text-box-look-sheet-*.png`: "the look should move into the shared widget but we have two cases a prominant text box (like the composer) which uses a thicker border width and the accent colour and normal text boxes which should be more subtle"). Module `look`, one place for both boxes; apps do not style text boxes.
+
+| | at rest | hovered | focused | focused, window behind others |
+|---|---|---|---|---|
+| **Prominent** (a window's main input; the text box only) | 4 px rest colour | as at rest | 4 px accent | 4 px accent faded halfway |
+| **Normal** (every other box and field) | 1 px rest colour | 1 px, the rest colour a 0.35 step towards the text | 2 px muted accent | 2 px rest colour |
+
+Both are rounded at libcosmic's `radius_s` and filled with the page's colour (rule 25d's light tone). A kept selection keeps the unfocused border. The rest colour is #5c5c5c on a dark theme and libcosmic's divider on a light one. The colour maths (`rest_border`, `hovered_border`, `faded_accent`, `muted_accent`) is household-tones'. An editable label (`short_text_box::editable`) keeps libcosmic's label look until it is edited.
+
+Whether a window is behind others is the app's to say, per box, as it builds that window's view: `Look::behind(bool)` for an editor, `Field::behind(bool)` for a field. A theme-level value would not do: libcosmic draws every window with the theme of the window in front.
 
 ### The short text box
 
@@ -230,15 +243,16 @@ A new draft is a new `TextBox` (the terminal's prompt, once sent). The history k
 | Call | Is |
 | --- | --- |
 | `ShortTextBox::new()`, `ShortTextBox::starting_with(text)` | a field's value with its undo history, nothing to undo yet; it derefs to the `str`, and `.value()`. A value that is where the field starts (a page number shown as the pages move) is a new box |
-| `ShortTextBox::password()` | a password's box: it keeps no history, as in GTK |
+| `PasswordBox::new()` | a password's value, with no history, as in GTK: `.perform(action)` (Undo and Redo do nothing), `.set(text, caret)`; it derefs to the `str` and writes nothing of it in `Debug` |
 | `short.perform(action)` | does a `short_text_box::Action`: the field's `Edit`, `Undo`, `Redo`; a step with the app's part hands it back as `Turn` |
 | `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret`, a `short_text_box::Caret` (`Start`, `End`, `At { anchor, caret }` in graphemes). The same value again by `replace` is nothing: no step, and the caret left where it is |
 | `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's (`Undoable`) |
 | `short_text_box::text(&short, placeholder, on_action)` | the field, as libcosmic's `text_input` |
 | `short_text_box::search(&short, placeholder, on_action)` | as `search_input`; `.on_clear(message)` shows its clear button, and the app clears the box with `replace` |
-| `short_text_box::secure(&short, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, with its show-or-hide button when `on_toggle` is given; only a password's box, and a password's box only here (either mistake panics) |
+| `short_text_box::secure(&password, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, over a `PasswordBox`, with its show-or-hide button when `on_toggle` is given; the other kinds take only a `ShortTextBox`, so a password cannot be shown plain nor a plain box keep a password's history |
 | `short_text_box::inline(..)`, `short_text_box::editable(.., editing, on_toggle_edit)` | as `inline_input` and `editable_input` |
-| `.on_submit(m)`, `.on_clear(m)`, `.on_focus(m)`, `.on_unfocus(m)`, `.on_tab(m)`, `.on_paste(f)`, `.id`, `.width`, `.padding`, `.size`, `.font`, `.label`, `.helper_text`, `.error`, `.select_on_focus`, `.leading_icon`, `.trailing_icon`, `.style` | on the field, passed on to libcosmic's input with the app's own messages; `.on_paste` is told after the box's own edit, and `.style` keeps the kept selection's look |
+| `.on_submit(m)`, `.on_clear(m)`, `.on_focus(m)`, `.on_unfocus(m)`, `.on_tab(m)`, `.on_paste(f)`, `.id`, `.width`, `.padding`, `.size`, `.font`, `.label`, `.helper_text`, `.error`, `.select_on_focus`, `.leading_icon`, `.trailing_icon` | on the field, passed on to libcosmic's input with the app's own messages; `.on_paste` is told after the box's own edit |
+| `.behind(window_behind)` | the field's window is behind others: its focused border is the rest colour |
 
 The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short, on_action))` for its menu with Undo · Redo, as a text box's editor is; a password's has no history to offer.
 
@@ -250,7 +264,7 @@ The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short
 - Enter submits; there are no new lines.
 - Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y are taken only while the field is focused; otherwise the key goes on to the app (Marginalium's Ctrl+Z undoes its notes). A password field takes them and does nothing.
 - Ctrl+Backspace and Ctrl+Delete are libcosmic's own, by words (to the start or end in a password), so they are not written again here; Shift+click, which `text_input` lacks, is added.
-- libcosmic's input lets its selection go on Esc and Tab and keeps it when a press elsewhere takes the focus (a menu opened): that kept selection is the one drawn dimmed.
+- libcosmic's input lets its selection go on Esc and Tab and keeps it when a press elsewhere takes the focus (a menu opened): that kept selection is the one drawn dimmed. It is drawn from the input's state as it was just before that press; if the value changes or a password is shown or hidden meanwhile, the kept selection is no longer drawn. An input in its error look keeps it, with the kept colours.
 
 **The kinds** are libcosmic's own constructors, one function each, giving one widget, `Field`: the look of each stays libcosmic's, and everything else is the same code. What an input method commits is typing, part of the run going on.
 

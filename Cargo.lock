@@ -1679,7 +1679,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "household-tones"
 version = "0.1.0"
-source = "git+https://github.com/ThomasAndJuliet/household-kit.git#bef3a9e943f33f8a1b8745386e66c930613e7ba7"
+source = "git+https://github.com/ThomasAndJuliet/household-kit.git#2df3d0c0f98adeeda5e483683cbf4b6a0d838f33"
 
 [[package]]
 name = "household-widgets"

@@ -24,9 +24,10 @@ use cosmic::widget::text_editor::{Cursor, Position};
 use cosmic::{Element, Theme, widget};
 use household_tones::{Srgb, tint};
 
+use crate::Look;
 use crate::Undoable;
 use crate::short_text_box::Caret;
-use crate::short_text_box::{self, Action, By, Edit, ShortTextBox, Span};
+use crate::short_text_box::{self, Action, By, Edit, PasswordBox, ShortTextBox, Span};
 use crate::text_box::{self, Turn};
 use crate::{TextBox, TextMenuHistory};
 
@@ -198,16 +199,28 @@ fn a_step_with_the_apps_part_hands_it_back() {
     assert!(!short.can_undo(), "the history ends at the part");
 }
 
+/// A password's box has no history to undo, and writes nothing out. A
+/// plain box cannot be shown as a password, nor a password in a plain
+/// field: `secure` takes only a PasswordBox, the other kinds never one
 #[test]
 fn a_password_keeps_no_history() {
-    let mut short: ShortTextBox = ShortTextBox::password();
-    typed(&mut short, "hunter2");
-    short.replace("", Caret::End);
-    short.replace_with("swordfish", Caret::End, ());
-    assert_eq!(short.value(), "swordfish");
-    assert!(!short.can_undo() && !short.can_redo());
+    let mut password = PasswordBox::new();
+    let edit = |value: &str| {
+        Action::Edit(Edit {
+            value: value.into(),
+            before: span(0, 0),
+            after: span(value.len(), value.len()),
+            by: By::Typed { space: false },
+            hidden: true,
+        })
+    };
+    password.perform(edit("hunter2"));
+    password.perform(Action::Undo);
+    assert_eq!(password.value(), "hunter2", "Undo does nothing");
+    password.set("swordfish", Caret::End);
+    assert_eq!(&*password, "swordfish");
     assert!(
-        !format!("{short:?}").contains("swordfish"),
+        !format!("{password:?}").contains("swordfish"),
         "a password is not written out"
     );
 }
@@ -300,9 +313,34 @@ impl Window {
 
     /// `view` drawn in `theme`, the pointer away from it
     fn shot<'a, M: 'a>(&mut self, view: impl Into<Element<'a, M>>, theme: &Theme) -> Shot {
+        self.shot_at(view, theme, BELOW)
+    }
+
+    /// `view` drawn in `theme`, the pointer at `pointer`
+    fn shot_at<'a, M: 'a>(
+        &mut self,
+        view: impl Into<Element<'a, M>>,
+        theme: &Theme,
+        pointer: Point,
+    ) -> Shot {
         let element = page(view.into());
         let cache = std::mem::take(&mut self.cache);
         let mut ui = UserInterface::build(element, WINDOW, cache, &mut self.renderer);
+        // The pointer there, and the frame asked for, as the event loop
+        // does before drawing: an editor takes its state's look from it
+        let redraw = Event::Window(cosmic::iced::window::Event::RedrawRequested(
+            std::time::Instant::now(),
+        ));
+        let _ = ui.update(
+            &[
+                Event::Mouse(mouse::Event::CursorMoved { position: pointer }),
+                redraw,
+            ],
+            mouse::Cursor::Available(pointer),
+            &mut self.renderer,
+            &mut self.board,
+            &mut Vec::new(),
+        );
         let style = Style {
             text_color: theme.cosmic().on_bg_color().into(),
             ..Style::default()
@@ -311,7 +349,7 @@ impl Window {
             &mut self.renderer,
             theme,
             &style,
-            mouse::Cursor::Available(BELOW),
+            mouse::Cursor::Available(pointer),
         );
         self.cache = ui.into_cache();
         Shot(self.renderer.screenshot(
@@ -451,7 +489,7 @@ fn ctrl_z_is_the_fields_only_while_it_is_focused() {
 #[test]
 fn a_password_field_takes_ctrl_z_and_does_nothing() {
     let mut window = Window::new();
-    let short: ShortTextBox = ShortTextBox::password();
+    let short = PasswordBox::new();
     let secure = |short| short_text_box::secure(short, "", Message::Box, true, None);
     window.send(secure(&short), &click(IN_FIELD));
     let (messages, statuses) =
@@ -620,7 +658,7 @@ fn a_text_boxs_selection_kept_unfocused_is_drawn_in_the_tint() {
     );
     fn view(text_box: &TextBox) -> Element<'_, text_box::Action> {
         text_box::wrap(
-            text_box::editor(text_box, |action| action).height(32.0),
+            text_box::editor(text_box, Look::normal(), |action| action).height(32.0),
             text_box,
             |action| action,
         )
@@ -706,20 +744,6 @@ fn a_passwords_edit_is_not_written_out() {
         hidden: true,
     };
     assert!(!format!("{edit:?}").contains("hunter2"));
-}
-
-#[test]
-#[should_panic(expected = "only a password's")]
-fn a_secure_field_over_a_plain_box_cannot_be_made() {
-    let short: ShortTextBox = ShortTextBox::new();
-    let _ = short_text_box::secure(&short, "", Message::Box, true, None);
-}
-
-#[test]
-#[should_panic(expected = "only a password's")]
-fn a_password_cannot_be_shown_in_a_plain_field() {
-    let short: ShortTextBox = ShortTextBox::password();
-    let _ = short_text_box::text(&short, "", Message::Box);
 }
 
 #[test]
@@ -926,4 +950,144 @@ fn the_apps_new_value_lets_a_kept_selection_go() {
     window.send(field(&short), &[]);
     let after = window.shot(field(&short), &theme);
     assert!(after.count(tinted) < 10, "{} pixels", after.count(tinted));
+}
+
+// ---------------------------------------------------------------------------
+// The look: two kinds of text box (rule 25a, Juliet 8 Nov)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Prominent,
+    NormalEditor,
+    NormalField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Is {
+    Rest,
+    Hovered,
+    Focused,
+    Behind,
+    Kept,
+}
+
+fn editor_view(text_box: &TextBox, look: Look) -> Element<'_, Message> {
+    text_box::wrap(
+        text_box::editor(text_box, look, |_| Message::Submit).height(40.0),
+        text_box,
+        |_| Message::Submit,
+    )
+}
+
+/// `kind` in the state `is`, drawn in `theme`
+fn looked(kind: Kind, is: Is, theme: &Theme) -> Shot {
+    let mut window = Window::new();
+    let selected: TextBox = TextBox::starting_with(
+        "hello world",
+        text_box::Caret::At(Cursor {
+            position: Position {
+                line: 0,
+                column: 11,
+            },
+            selection: Some(Position { line: 0, column: 0 }),
+        }),
+    );
+    let short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    let behind = is == Is::Behind;
+    let view = || -> Element<'_, Message> {
+        match kind {
+            Kind::Prominent => editor_view(&selected, Look::prominent().behind(behind)),
+            Kind::NormalEditor => editor_view(&selected, Look::normal().behind(behind)),
+            Kind::NormalField => field(&short).behind(behind).into(),
+        }
+    };
+    let mut events = Vec::new();
+    if matches!(is, Is::Focused | Is::Behind | Is::Kept) {
+        events.extend(click(IN_FIELD));
+    }
+    if is == Is::Kept {
+        events.push(press("a", Code::KeyA, Modifiers::CTRL));
+        events.extend(click(BELOW));
+    }
+    window.send(view(), &events);
+    let pointer = if is == Is::Hovered { IN_FIELD } else { BELOW };
+    window.shot_at(view(), theme, pointer)
+}
+
+fn hex(colour: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2])
+}
+
+/// Each kind in each state, on COSMIC's own dark and light themes, against
+/// the 8 Nov sheet's values (its report, `ui-evidence/text-box-look-sheet`),
+/// the normal box's focused border being the muted accent the rule settled
+/// on in place of the sheet's faded one
+#[test]
+fn each_kind_of_text_box_in_each_state_is_drawn_as_the_rule_says() {
+    let mut wrong = Vec::new();
+    for (theme, page, accent, rest, hovered, faded) in [
+        (
+            Theme::dark(),
+            "#1b1b1b",
+            "#63d0df",
+            "#5c5c5c",
+            "#8d8d8d",
+            "#60969e",
+        ),
+        (
+            Theme::light(),
+            "#ebebeb",
+            "#00525a",
+            "#b0b0b0",
+            "#787878",
+            "#588185",
+        ),
+    ] {
+        let dark = theme.cosmic().is_dark;
+        assert_eq!(hex(rgb8(theme.cosmic().accent_color().into())), accent);
+        let muted =
+            household_tones::muted_accent(Srgb::parse(accent).expect("a colour"), dark).to_hex();
+        for kind in [Kind::Prominent, Kind::NormalEditor, Kind::NormalField] {
+            for is in [Is::Rest, Is::Hovered, Is::Focused, Is::Behind, Is::Kept] {
+                let want = match (kind, is) {
+                    (Kind::Prominent, Is::Focused) => accent.to_string(),
+                    (Kind::Prominent, Is::Behind) => faded.to_string(),
+                    (Kind::Prominent, _) => rest.to_string(),
+                    (_, Is::Hovered) => hovered.to_string(),
+                    (_, Is::Focused) => muted.clone(),
+                    (_, Is::Rest | Is::Behind | Is::Kept) => rest.to_string(),
+                };
+                let shot = looked(kind, is, &theme);
+                // The border's outermost pixel, half way down the box
+                let edge = hex(shot.at(Point::new(0.0, 16.0)));
+                let ground = hex(shot.at(Point::new(300.0, 16.0)));
+                if edge != want || ground != page {
+                    wrong.push(format!(
+                        "{} {kind:?} {is:?}: border {edge}, want {want}; ground {ground}, want {page}",
+                        if dark { "dark" } else { "light" }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The width of each kind's border: 4 px prominent, 1 px normal at rest and
+/// 2 px focused
+#[test]
+fn each_kind_of_text_box_has_its_border_width() {
+    let theme = Theme::dark();
+    let page = [0x1b, 0x1b, 0x1b];
+    let width = |shot: &Shot| {
+        (0..8)
+            .take_while(|x| shot.at(Point::new(*x as f32, 16.0)) != page)
+            .count()
+    };
+    assert_eq!(width(&looked(Kind::Prominent, Is::Rest, &theme)), 4);
+    assert_eq!(width(&looked(Kind::Prominent, Is::Focused, &theme)), 4);
+    assert_eq!(width(&looked(Kind::NormalField, Is::Rest, &theme)), 1);
+    assert_eq!(width(&looked(Kind::NormalField, Is::Focused, &theme)), 2);
+    assert_eq!(width(&looked(Kind::NormalEditor, Is::Focused, &theme)), 2);
 }

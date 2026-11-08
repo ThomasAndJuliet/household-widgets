@@ -32,9 +32,12 @@
 //! - Enter submits ([`Field::on_submit`]); there are no new lines.
 //! - Ctrl+Backspace and Ctrl+Delete are libcosmic's own, by words (to the
 //!   start or end in a password); Shift+click, which it lacks, is added.
-//! - A password ([`ShortTextBox::password`], shown only by [`secure`]) keeps
-//!   no history, as in GTK: nothing typed into it is kept for Undo, Ctrl+Z
-//!   does nothing, and nothing of it is written out by `Debug`.
+//! - A password is a [`PasswordBox`], which only [`secure`] shows, and
+//!   `secure` shows nothing else: it keeps no history, as in GTK (nothing
+//!   typed into it is kept for Undo, Ctrl+Z does nothing), and nothing of
+//!   it is written out by `Debug`.
+//! - Fields are normal text boxes in the household's look ([`Look`], rule
+//!   25a); [`Field::behind`] says the field's window is behind others.
 //!
 //! **The kinds** are libcosmic's own constructors, one function each, all
 //! giving one widget, [`Field`]: [`text`] (`text_input`), [`search`]
@@ -73,6 +76,7 @@ use cosmic::{Element, Renderer, Theme};
 
 use crate::history::{History, Run, Turn, Undoable};
 use crate::kept;
+use crate::look::{Look, State};
 use crate::text_box::{self, history_key};
 
 /// Where the app puts a field's caret when it sets the value, in graphemes
@@ -185,8 +189,6 @@ pub struct ShortTextBox<P = ()> {
     history: History<Line, P>,
     /// Where the field is to put its caret, and the request's number
     pub(crate) put: Option<(u64, Span)>,
-    /// A password: no history
-    password: bool,
 }
 
 impl<P> Default for ShortTextBox<P> {
@@ -196,7 +198,6 @@ impl<P> Default for ShortTextBox<P> {
             span: Span::default(),
             history: History::default(),
             put: None,
-            password: false,
         }
     }
 }
@@ -211,12 +212,8 @@ impl<P> Deref for ShortTextBox<P> {
 
 impl<P> std::fmt::Debug for ShortTextBox<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value: &dyn std::fmt::Debug = match self.password {
-            true => &"(hidden)",
-            false => &self.value,
-        };
         f.debug_struct("ShortTextBox")
-            .field("value", value)
+            .field("value", &self.value)
             .field("history", &self.history.len())
             .finish()
     }
@@ -236,20 +233,6 @@ impl<P: Clone> ShortTextBox<P> {
             span: Span::at(Value::new(text).len()),
             ..Self::default()
         }
-    }
-
-    /// An empty password box, which keeps no history, as in GTK. Only
-    /// [`secure`] shows it
-    pub fn password() -> Self {
-        Self {
-            password: true,
-            ..Self::default()
-        }
-    }
-
-    /// Whether this is a password's box
-    pub fn is_password(&self) -> bool {
-        self.password
     }
 
     /// The value
@@ -285,11 +268,6 @@ impl<P: Clone> ShortTextBox<P> {
             self.history.end_run();
             return;
         }
-        if self.password {
-            self.value = value;
-            self.span = after;
-            return;
-        }
         // The caret moved since the last edit: the run going on has ended
         if before != self.span {
             self.history.end_run();
@@ -314,7 +292,7 @@ impl<P: Clone> ShortTextBox<P> {
     /// The caret is to go to `span`: the field puts it there when next built
     fn put(&mut self, span: Span) {
         self.span = span;
-        self.put = Some((REQUESTS.fetch_add(1, Ordering::Relaxed), span));
+        self.put = Some(request(span));
     }
 }
 
@@ -348,17 +326,8 @@ impl<P: Clone> Undoable for ShortTextBox<P> {
     }
 
     fn set(&mut self, text: &str, caret: Caret) {
-        let length = Value::new(text).len();
-        let span = match caret {
-            Caret::Start => Span::at(0),
-            Caret::End => Span::at(length),
-            Caret::At { anchor, caret } => Span {
-                anchor: anchor.min(length),
-                caret: caret.min(length),
-            },
-        };
         self.value = text.to_string();
-        self.put(span);
+        self.put(span_for(text, caret));
         self.history.end_run();
     }
 
@@ -367,9 +336,78 @@ impl<P: Clone> Undoable for ShortTextBox<P> {
     }
 
     fn unchanged(&mut self, _: Caret) {}
+}
 
-    fn keeps_history(&self) -> bool {
-        !self.password
+/// Where `caret` is in `text`, kept inside it
+fn span_for(text: &str, caret: Caret) -> Span {
+    let length = Value::new(text).len();
+    match caret {
+        Caret::Start => Span::at(0),
+        Caret::End => Span::at(length),
+        Caret::At { anchor, caret } => Span {
+            anchor: anchor.min(length),
+            caret: caret.min(length),
+        },
+    }
+}
+
+/// A request to put a field's caret at `span`, newer than any before
+fn request(span: Span) -> (u64, Span) {
+    (REQUESTS.fetch_add(1, Ordering::Relaxed), span)
+}
+
+/// A password's value, which the app keeps, with no history: nothing typed
+/// into it is kept for Undo, as in GTK, and nothing of it is written out by
+/// `Debug`. Only [`secure`] shows it, and `secure` shows nothing else, so
+/// a password cannot be shown in a plain field, nor a plain box keep a
+/// password's history
+#[derive(Default)]
+pub struct PasswordBox {
+    value: String,
+    put: Option<(u64, Span)>,
+}
+
+impl PasswordBox {
+    /// An empty password box
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The value
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Does `action`: the field's edit sets the value; Undo and Redo do
+    /// nothing, there being no history
+    pub fn perform(&mut self, action: Action) {
+        match action {
+            Action::Edit(edit) => self.value = edit.value,
+            Action::Undo | Action::Redo => {}
+        }
+    }
+
+    /// The value set by the app (a password cleared once used), the caret
+    /// at `caret`
+    pub fn set(&mut self, text: &str, caret: Caret) {
+        self.value = text.to_string();
+        self.put = Some(request(span_for(text, caret)));
+    }
+}
+
+impl Deref for PasswordBox {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.value
+    }
+}
+
+impl std::fmt::Debug for PasswordBox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordBox")
+            .field("value", &"(hidden)")
+            .finish()
     }
 }
 
@@ -382,36 +420,75 @@ enum Change<M> {
     App(M),
 }
 
-/// libcosmic's style for a field, with the look of a kept selection when
-/// that is drawn (as focused, so that libcosmic draws the selection)
-fn with_kept_selection(base: Rc<cosmic::theme::TextInput>) -> cosmic::theme::TextInput {
+/// A field's style: libcosmic's for its kind (`base`), in the household's
+/// look ([`Look`]), with the look of a kept selection when that is drawn:
+/// libcosmic draws a selection only for a focused input, so a kept one is
+/// drawn as focused, and the border is the unfocused one. An editable
+/// field (`editable`) keeps libcosmic's label look until it is edited
+fn field_style(
+    base: Rc<cosmic::theme::TextInput>,
+    look: Look,
+    editable: bool,
+) -> cosmic::theme::TextInput {
     let style = move || base.clone();
     let (active, error, hovered, focused, disabled) = (style(), style(), style(), style(), style());
+    let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| {
+        field_look(theme, base, look, state, editable)
+    };
     cosmic::theme::TextInput::Custom {
-        active: Box::new(move |theme| theme.active(&active)),
-        error: Box::new(move |theme| theme.error(&error)),
-        hovered: Box::new(move |theme| theme.hovered(&hovered)),
+        active: Box::new(move |theme| looks(theme, &active, State::Rest)),
+        // An input in its error state is drawn so, even as focused: a kept
+        // selection in it takes the kept colours there
+        error: Box::new(move |theme| match kept::drawing() {
+            Some(_) => kept_colours(theme, theme.error(&error)),
+            None => theme.error(&error),
+        }),
+        hovered: Box::new(move |theme| looks(theme, &hovered, State::Hovered)),
         focused: Box::new(move |theme| match kept::drawing() {
-            Some(over) => kept_look(theme, &focused, over),
-            None => theme.focused(&focused),
+            Some(over) => {
+                let state = if over { State::Hovered } else { State::Rest };
+                kept_colours(theme, looks(theme, &focused, state))
+            }
+            None => looks(theme, &focused, State::Focused),
         }),
         disabled: Box::new(move |theme| theme.disabled(&disabled)),
     }
 }
 
-/// The field unfocused, as it is with the pointer over it or not, with a
-/// kept selection's colours
-fn kept_look(theme: &Theme, style: &cosmic::theme::TextInput, hovered: bool) -> Appearance {
-    let mut look = match hovered {
-        true => theme.hovered(style),
-        false => theme.active(style),
+/// libcosmic's look of `base` in `state`, on the page's colour and with the
+/// border of `look`'s kind
+fn field_look(
+    theme: &Theme,
+    base: &cosmic::theme::TextInput,
+    look: Look,
+    state: State,
+    editable: bool,
+) -> Appearance {
+    let mut appearance = match state {
+        State::Rest => theme.active(base),
+        State::Hovered => theme.hovered(base),
+        State::Focused => theme.focused(base),
     };
+    if editable && state != State::Focused {
+        return appearance;
+    }
+    let border = look.border(theme, state);
+    appearance.background = crate::look::background(theme);
+    appearance.border_offset = None;
+    appearance.border_width = border.width;
+    appearance.border_color = border.color;
+    appearance.border_radius = border.radius;
+    appearance
+}
+
+/// `appearance` with a kept selection's colours
+fn kept_colours(theme: &Theme, mut appearance: Appearance) -> Appearance {
     let container = theme.current_container();
-    let text = look.text_color.unwrap_or_else(|| container.on.into());
-    let beneath = kept::flat(look.background, container.base.into());
-    (look.selected_fill, look.selected_text_color) =
+    let text = appearance.text_color.unwrap_or_else(|| container.on.into());
+    let beneath = kept::flat(appearance.background, container.base.into());
+    (appearance.selected_fill, appearance.selected_text_color) =
         kept::kept_selection_colours(theme, text, beneath);
-    look
+    appearance
 }
 
 /// A short text box shown: libcosmic's text input over a
@@ -424,6 +501,10 @@ pub struct Field<'a, M> {
     messages: Messages<'a, M>,
     /// Where the box asks for the caret to go, and the request's number
     put: Option<(u64, Span)>,
+    /// libcosmic's style for the kind of input, which the look is drawn on
+    base: Rc<cosmic::theme::TextInput>,
+    /// An editable label's input, looking like text until it is edited
+    editable: bool,
     /// What the input's overlays publish, made when they are asked for
     overlay_map: Option<Box<dyn Fn(Change<M>) -> M + 'a>>,
 }
@@ -497,7 +578,7 @@ pub fn text<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Default,
         false,
-        text_box,
+        (text_box.put, false),
         on_action,
     )
 }
@@ -514,7 +595,7 @@ pub fn search<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Search,
         false,
-        text_box,
+        (text_box.put, false),
         on_action,
     )
 }
@@ -531,7 +612,7 @@ pub fn inline<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Inline,
         false,
-        text_box,
+        (text_box.put, false),
         on_action,
     )
 }
@@ -555,18 +636,17 @@ pub fn editable<'a, P: Clone, M: Clone + 'static>(
     Field::new(
         input,
         cosmic::theme::TextInput::EditableText,
-        false,
-        text_box,
+        true,
+        (text_box.put, false),
         on_action,
     )
 }
 
-/// A password box, as libcosmic's `secure_input`: hidden while `hidden`,
-/// with its show-or-hide button publishing `on_toggle`, if given. Its box
-/// is a password's ([`ShortTextBox::password`]), which keeps no history;
-/// any other box is a mistake, and panics here
-pub fn secure<'a, P: Clone, M: Clone + 'static>(
-    text_box: &'a ShortTextBox<P>,
+/// A password box, as libcosmic's `secure_input`, over a [`PasswordBox`]
+/// (which keeps no history): hidden while `hidden`, with its show-or-hide
+/// button publishing `on_toggle`, if given
+pub fn secure<'a, M: Clone + 'static>(
+    text_box: &'a PasswordBox,
     placeholder: impl Into<Cow<'a, str>>,
     on_action: impl Fn(Action) -> M + 'a,
     hidden: bool,
@@ -581,39 +661,49 @@ pub fn secure<'a, P: Clone, M: Clone + 'static>(
     Field::new(
         input,
         cosmic::theme::TextInput::Default,
-        true,
-        text_box,
+        false,
+        (text_box.put, true),
         on_action,
     )
 }
 
 impl<'a, M: Clone + 'static> Field<'a, M> {
-    fn new<P: Clone>(
+    /// A field over libcosmic's `input` of the kind drawn in `base`; `put`,
+    /// where its box asks for the caret, and whether it is a password's
+    fn new(
         input: TextInput<'a, Change<M>>,
-        style: cosmic::theme::TextInput,
-        secure: bool,
-        text_box: &ShortTextBox<P>,
+        base: cosmic::theme::TextInput,
+        editable: bool,
+        (put, hidden): (Option<(u64, Span)>, bool),
         on_action: impl Fn(Action) -> M + 'a,
     ) -> Self {
-        // A password shown as plain text would be read off the screen, and
-        // what is typed into a secure field must not be kept
-        assert!(
-            text_box.password == secure,
-            "a password's box (ShortTextBox::password) is shown by `secure`, and only a password's"
-        );
+        let base = Rc::new(base);
         Self {
             input: input
                 .on_input(Change::Input)
                 .on_paste(Change::Pasted)
-                .style(with_kept_selection(Rc::new(style))),
+                .style(field_style(base.clone(), Look::normal(), editable)),
             messages: Messages {
                 on_action: Rc::new(on_action),
                 on_paste: None,
-                hidden: text_box.password,
+                hidden,
             },
-            put: text_box.put,
+            put,
+            base,
+            editable,
             overlay_map: None,
         }
+    }
+
+    /// Whether the field's window is behind others: its focused border is
+    /// then the rest colour (rule 25a, a normal text box)
+    pub fn behind(self, behind: bool) -> Self {
+        let style = field_style(
+            self.base.clone(),
+            Look::normal().behind(behind),
+            self.editable,
+        );
+        self.with(|input| input.style(style))
     }
 
     /// libcosmic's input, changed by `change`
@@ -707,13 +797,6 @@ impl<'a, M: Clone + 'static> Field<'a, M> {
     pub fn trailing_icon(self, icon: impl Into<Element<'a, M>>) -> Self {
         let icon = icon.into().map(Change::App);
         self.with(|input| input.trailing_icon(icon))
-    }
-
-    /// libcosmic's style for the field, in place of its kind's; a kept
-    /// selection is drawn in it as in any
-    pub fn style(self, style: cosmic::theme::TextInput) -> Self {
-        let style = with_kept_selection(Rc::new(style));
-        self.with(|input| input.style(style))
     }
 
     /// `run` on the input, with what it says turned into the app's
@@ -839,11 +922,12 @@ impl<M: Clone + 'static> Field<'_, M> {
             kept.state = tree::State::new(focused);
             own.kept = Some(kept);
         }
-        // The value changed since (the app set it): the selection drawn
-        // would be of the old one
+        // The value changed since (the app set it), or a password was shown
+        // or hidden: the selection drawn would be of the old one
         if own.kept.as_ref().is_some_and(|kept| {
             state(kept).tracked_value != input.tracked_value
                 || state(kept).cursor() != input.cursor()
+                || state(kept).is_secure != input.is_secure
         }) {
             own.kept = None;
         }
