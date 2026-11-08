@@ -11,6 +11,8 @@ use cosmic::{Element, Renderer, Theme, widget};
 use crate::layout::{Child, Level, child, measure_element};
 
 const ICON_TEXT_GAP: u16 = 8;
+const SCROLLBAR_WIDTH: f32 = 8.0;
+const SCROLLBAR_GAP: f32 = 2.0;
 
 #[derive(Clone)]
 pub struct Tab {
@@ -140,6 +142,7 @@ pub enum Overflow {
     /// Labels at 0/1, active label and icons at 2, named dropdown at 3.
     Dropdown,
     /// Full labels at 0; a horizontally scrolling viewport at 1/2/3.
+    /// Reserves 10px below the button height for the scrollbar and gap.
     Scroll { minimum_viewport: f32 },
 }
 
@@ -207,7 +210,7 @@ pub fn strip<'a, Message: Clone + 'static>(
             content: widget::space().into(),
         }),
         (Overflow::Scroll { .. }, _) => {
-            let content = widget::scrollable(native_bar(
+            let content = cosmic::iced::widget::scrollable(native_bar(
                 &model.full,
                 model.full_ids.clone(),
                 on_select,
@@ -215,9 +218,16 @@ pub fn strip<'a, Message: Clone + 'static>(
                 model.font_size,
                 model.id.clone(),
             ))
-            .horizontal()
+            .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+                cosmic::iced::widget::scrollable::Scrollbar::new()
+                    .width(SCROLLBAR_WIDTH)
+                    .scroller_width(SCROLLBAR_WIDTH)
+                    .spacing(SCROLLBAR_GAP),
+            ))
             .width(Length::Fill)
-            .height(Length::Fixed(f32::from(model.button_height)))
+            .height(Length::Fixed(
+                f32::from(model.button_height) + SCROLLBAR_WIDTH + SCROLLBAR_GAP,
+            ))
             .into();
             Element::new(Reveal { model, content })
         }

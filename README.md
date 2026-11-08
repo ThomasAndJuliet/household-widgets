@@ -105,7 +105,10 @@ at 2, and a named dropdown at 3. Inactive compact tabs keep native hover tooltip
 the shared presentation wrapper delegates tab events and keyboard operations.
 `Overflow::Scroll { minimum_viewport }` keeps all labels and permits a scrolling
 viewport from level 1. Its minimum viewport is distinct from its full content
-width. The native floating scrollbar stays visible when applicable. Selection
+width. An embedded scrollbar has its own 8px lane plus a 2px gap below the tabs.
+The query therefore reports button height plus 10px, including when wide, so
+scrolling does not change the row height. A 32px header cannot fit this form
+without allocating more height or choosing a different overflow policy. Selection
 changes and viewport resizing reveal the selected tab using measured native tab
 bounds, while ordinary manual scrolling is retained. The native tab style is
 the terminal's TabBar style with plain inactive title colours on hover and press.

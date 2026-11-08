@@ -169,11 +169,13 @@ fn compact_inactive_hover_keeps_its_full_name_in_the_native_tooltip() {
     assert!((bubble.size().height - expected.height).abs() < 0.5);
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct ScrollPosition {
     offset: f32,
     viewport: f32,
     content: f32,
+    viewport_height: f32,
+    content_height: f32,
 }
 impl Operation for ScrollPosition {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
@@ -190,6 +192,41 @@ impl Operation for ScrollPosition {
         self.offset = translation.x;
         self.viewport = bounds.width;
         self.content = content.width;
+        self.viewport_height = bounds.height;
+        self.content_height = content.height;
+    }
+}
+
+#[test]
+fn scrolling_tabs_reserve_a_separate_scrollbar_lane() {
+    let renderer = renderer();
+    for (height, font) in [(32, 14.0), (48, 22.0)] {
+        let model = model().button_height(height).font_size(font);
+        let component = strip(
+            &model,
+            Overflow::Scroll {
+                minimum_viewport: 100.0,
+            },
+            index,
+        );
+        let measured = component.query(Level::Mild, &renderer);
+        let (mut element, mut tree, node) =
+            laid_out(component, Level::Mild, &renderer, 160.0, Tree::empty());
+        let mut position = ScrollPosition::default();
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut position);
+        assert!(position.content > position.viewport);
+        assert_eq!(
+            position.content_height,
+            f32::from(height),
+            "tabs keep their full height"
+        );
+        assert!(
+            position.viewport_height - position.content_height >= 10.0,
+            "scrollbar needs an 8px lane plus 2px gap outside tabs: {position:?}"
+        );
+        assert_eq!(measured.minimum.height, node.size().height);
     }
 }
 
