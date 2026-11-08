@@ -233,7 +233,7 @@ Every household app has `[patch."https://github.com/pop-os/libcosmic.git"]` poin
 
 This repository's own `Cargo.toml` has a `[patch]` for its tests, Clippy and CI. Apps using `TextMenu` must pin a compatible household libcosmic revision providing the native text target and session interfaces. This crate is tested against `dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc`, which includes the native editing, popup and named-selection fixes; older fork revisions lack these interfaces or fixes. Cargo reads `[patch]` only from the workspace being built, so each app chooses its own compatible fork revision.
 
-An app's CI needs its own read key for this repository, `HOUSEHOLD_WIDGETS_DEPLOY_KEY`, with a line for it in that app's `scripts/ci-private-crates.sh`, and a Flatpak app needs the crate in its `cargo-sources.json`.
+Until this repository is public, an app's CI needs its own read key for it, `HOUSEHOLD_WIDGETS_DEPLOY_KEY`, with a line for it in that app's `scripts/ci-private-crates.sh`. A Flatpak app needs the crate in its `cargo-sources.json`.
 
 ## Adding a widget
 
@@ -246,17 +246,15 @@ An app's CI needs its own read key for this repository, `HOUSEHOLD_WIDGETS_DEPLO
 ## Checks and CI
 
 ```sh
-~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- fmt --check
-~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- clippy --all-targets --all-features --locked -- -D warnings
-~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- test --locked
-~/.local/bin/neo-cargo ~/Code/household-widgets household-widgets -- test --all-features --locked
+cargo fmt --all --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+cargo test --all-features --locked
 ```
 
-Neo cannot fetch the private repositories over ssh, so the revisions in `Cargo.lock` must already be in neo's cargo cache. To add one, push it there from a clone, e.g. `git push jcooke@neo:.cargo/git/db/household-kit-342368da86f19946 REV:refs/heads/locked-REV`; the fork's is `libcosmic-bd0cc8a7924f73dc`.
+The household libcosmic fork and household-kit are private repositories while this one is public, so building needs read access to them over ssh until the dependencies are public too (see `Cargo.toml`).
 
-`.github/workflows/ci.yml` runs `cargo fmt --all --check`,
-`cargo clippy --all-targets --all-features --locked -- -D warnings`,
-`cargo test --locked` and `cargo test --all-features --locked` on neo's runner (`neo-ubuntu`, or GitHub-hosted when the `CI_RUNNER` variable is `hosted`). It fetches the private crates with `scripts/ci-private-crates.sh` (COSMIC Terminal's, copied), so the repository needs two secrets, the private halves of read-only deploy keys: `LIBCOSMIC_DEPLOY_KEY` for the fork and `HOUSEHOLD_KIT_DEPLOY_KEY` for household-kit. Without them, the job stops at that step with a message naming the secret.
+`.github/workflows/ci.yml` runs those four commands. Pushes to this repository, same-repository pull requests and manual runs use the household's self-hosted runner (or a GitHub-hosted one when the `CI_RUNNER` variable is `hosted`) and fetch the private crates with `scripts/ci-private-crates.sh`, so the repository needs two secrets, the private halves of read-only deploy keys: `LIBCOSMIC_DEPLOY_KEY` for the fork and `HOUSEHOLD_KIT_DEPLOY_KEY` for household-kit. Pull requests from forks run on a GitHub-hosted runner with a read-only token and no secrets, and never on the self-hosted runner.
 
 ## Licence
 
