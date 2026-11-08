@@ -1,19 +1,26 @@
 name: CI
-# The crate's own checks: formatting, Clippy and its tests. The runner and
-# its fallback are neo-infrastructure's (services/ci-runners), as
-# household-kit's CI has them: neo's Ubuntu runner by default, GitHub-hosted
-# when the CI_RUNNER variable is "hosted". household-widgets is a library,
-# so there is no Flatpak build here.
+# The crate's own checks: formatting, Clippy and its tests. household-widgets
+# is a library, so there is no Flatpak build here.
 #
-# The crate is built against the household libcosmic fork at the revision
-# in Cargo.toml's [patch], and household-tones from household-kit, private
-# repositories fetched over ssh: this repository needs the secrets
+# Where it runs depends on who started it. Pushes to this repository,
+# same-repository pull requests and manual runs are trusted: they run on the
+# household's self-hosted runner (`neo-ubuntu`), or on a GitHub-hosted one when
+# the CI_RUNNER variable is "hosted", and may use the deploy-key secrets below.
+# A pull request from a fork is not trusted: it runs on a GitHub-hosted runner
+# with a read-only token, receives no secrets, and never reaches a self-hosted
+# runner. This workflow uses `pull_request`, never `pull_request_target`.
+#
+# The crate is built against the household libcosmic fork at the revision in
+# Cargo.toml's [patch], and household-tones from household-kit. While those
+# repositories are private they are fetched over ssh with the secrets
 # LIBCOSMIC_DEPLOY_KEY and HOUSEHOLD_KIT_DEPLOY_KEY, the private halves of
-# their read-only deploy keys. Without them the job stops at that step with
-# a message naming the secret. The [patch] is for this build only; an app
-# that depends on household-widgets builds it with the app's own libcosmic.
+# their read-only deploy keys; a fork pull request cannot fetch them and
+# fails at the fetch until the dependencies are public and fetched over https.
+# The [patch] is for this build only; an app that depends on
+# household-widgets builds it with the app's own libcosmic.
 on:
   push:
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,14 +32,15 @@ env:
 jobs:
   check:
     name: Format, Clippy and tests
-    runs-on: ${{ vars.CI_RUNNER == 'hosted' && 'ubuntu-24.04' || 'neo-ubuntu' }}
+    # Self-hosted only for a trusted event: a push, a manual run or a pull
+    # request whose head is this repository. Anything else is GitHub-hosted.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_RUNNER != 'hosted' && 'neo-ubuntu' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The version neo's build toolbox has, so that formatting and Clippy
-      # say the same in CI as in the builds agents run there
+      # Fixed, so that formatting and Clippy say the same everywhere
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           toolchain: 1.99.0
@@ -45,6 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libinput-dev libudev-dev libdbus-1-dev
       - name: Let git and cargo fetch the household libcosmic fork and household-kit
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           LIBCOSMIC_DEPLOY_KEY: ${{ secrets.LIBCOSMIC_DEPLOY_KEY }}
           HOUSEHOLD_KIT_DEPLOY_KEY: ${{ secrets.HOUSEHOLD_KIT_DEPLOY_KEY }}
