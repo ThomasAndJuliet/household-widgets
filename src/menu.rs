@@ -444,8 +444,9 @@ impl MenuRow {
                 .into(),
         });
         row.push(widget::space::horizontal().width(space).into());
-        let mut text =
-            widget::text(label).ellipsize(cosmic::iced::advanced::text::Ellipsize::Middle(
+        let mut text = widget::text(label)
+            .shaping(cosmic::iced::advanced::text::Shaping::Advanced)
+            .ellipsize(cosmic::iced::advanced::text::Ellipsize::Middle(
                 cosmic::iced::advanced::text::EllipsizeHeightLimit::Lines(1),
             ));
         if chosen {
@@ -470,6 +471,7 @@ impl MenuRow {
         } else {
             row.push(
                 widget::text(key)
+                    .shaping(cosmic::iced::advanced::text::Shaping::Advanced)
                     .class(theme::Text::Custom(|theme| {
                         let cosmic = theme.cosmic();
                         let colour = cosmic.on_bg_color();
@@ -631,10 +633,16 @@ mod tests {
             } else {
                 cosmic::font::default()
             };
-            assert!(label.width + 0.5 >= measured_width("A long menu label", 14.0, font));
+            assert!(
+                label.width + 0.5 >= measured_width("A long menu label", 14.0, font),
+                "selected={selected}, row_width={width}, label={label:?}, measured_label={}",
+                measured_width("A long menu label", 14.0, font)
+            );
             assert!(
                 key.width + 0.5
-                    >= measured_width("Ctrl + Shift + C", 14.0, cosmic::font::default())
+                    >= measured_width("Ctrl + Shift + C", 14.0, cosmic::font::default()),
+                "selected={selected}, row_width={width}, shortcut={key:?}, measured_shortcut={}",
+                measured_width("Ctrl + Shift + C", 14.0, cosmic::font::default())
             );
             assert!(label.x + label.width <= key.x);
         }
