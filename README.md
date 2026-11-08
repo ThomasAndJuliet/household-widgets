@@ -100,8 +100,9 @@ hidden children are omitted. Each stage starts from its own preferred sizes,
 so width released by menu compaction can restore a sibling title. The chosen
 plan is used to render, rather than recomputing row membership during commit.
 Native leaf dimensions are checked again during commit. If live widget state
-causes disagreement with the isolated query, the root reports no fit and drops
-the rejected event/overlay/accessibility tree.
+causes disagreement with the isolated query, the root drops that rejected
+event/overlay/accessibility tree and tries the next declared stage. It reports
+no fit only after exhausting the stages.
 
 `ResponsiveLevels::selection()` exposes the last selection result. With no
 fit, the default native content is empty; `.fallback(|| element)` provides an
