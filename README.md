@@ -195,3 +195,7 @@ into remaining row space. `Child::grow(weight)` shares surplus after preferred
 widths fit; it is independent of the shrink weight. Nested components remain
 explicit: give a composite a grow weight when its parent should offer it extra
 space. An expanding gap therefore needs no application-specific width estimate.
+
+`Child::round_width_up()` rounds only that component's measured width offers
+up to whole logical pixels, for aligned control origins. It leaves the native
+measurement function and the continuous allocation algorithm unchanged.

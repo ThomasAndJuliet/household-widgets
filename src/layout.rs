@@ -235,6 +235,19 @@ impl<'a, Message: 'a> Child<'a, Message> {
         self
     }
 
+    /// Reserve whole logical-pixel widths for controls whose origins must align.
+    /// Native measurement stays unchanged; only this child's size offers round up.
+    pub fn round_width_up(mut self) -> Self {
+        let query = self.query.clone();
+        self.query = Rc::new(move |level, renderer| {
+            let mut measured = query(level, renderer);
+            measured.preferred.width = measured.preferred.width.ceil();
+            measured.minimum.width = measured.minimum.width.ceil();
+            measured
+        });
+        self
+    }
+
     /// The view must remain usable at this width without exceeding its queried
     /// height. A scrolling viewport satisfies this contract; arbitrary wrapping
     /// text needs its own height-aware query instead of this width-only override.

@@ -462,3 +462,30 @@ fn surplus_shares_follow_grow_weights_without_changing_intrinsic_queries() {
     assert_eq!(node.children()[0].children()[0].size().width, 14.0);
     assert_eq!(node.children()[0].children()[1].size().width, 38.0);
 }
+
+#[test]
+fn optional_whole_pixel_offers_keep_fractional_content_from_shifting_neighbors() {
+    let renderer = renderer();
+    let leaf = || child(|_| widget::Space::new().width(10.25).height(32).into());
+    let raw: Child<'_, u8> = leaf();
+    assert_eq!(
+        raw.query(Level::Preferred, &renderer).preferred.width,
+        10.25
+    );
+    let snapped = leaf().round_width_up();
+    assert_eq!(
+        snapped.query(Level::Preferred, &renderer).preferred.width,
+        11.0
+    );
+    let component = row_child(vec![spacer(0.0), snapped, leaf().round_width_up()], 8.0);
+    let mut root = responsive_child(Level::AllPermitted, component);
+    let mut tree = Tree::empty();
+    let node = root.layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(100.0, 32.0)),
+    );
+    let boxes = node.children()[0].children();
+    assert_eq!(boxes[1].bounds().x, 70.0);
+    assert_eq!(boxes[2].bounds().x, 89.0);
+}
