@@ -22,6 +22,7 @@ mod forward;
 pub mod history;
 mod kept;
 mod level;
+mod look;
 pub mod menu;
 pub mod short_text_box;
 mod switch;
@@ -32,7 +33,8 @@ mod tooltip;
 
 pub use history::{Turn, Undoable};
 pub use level::{LEVEL_CAP, Level};
-pub use short_text_box::ShortTextBox;
+pub use look::Look;
+pub use short_text_box::{PasswordBox, ShortTextBox};
 pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 pub use text_box::TextBox;
 pub use text_button::{BUTTON_HEIGHT, Tertiary, TextButton, button_padding};

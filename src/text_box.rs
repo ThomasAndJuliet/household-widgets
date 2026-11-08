@@ -83,6 +83,8 @@ use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion,
 
 pub use crate::history::{BYTES, STEPS, Turn, Undoable};
 pub use crate::kept::kept_selection_colours;
+pub use crate::look::Look;
+use crate::look::State;
 
 /// iced's text and caret, which a [`TextBox`] holds
 pub type Content = text_editor::Content<cosmic::Renderer>;
@@ -617,23 +619,47 @@ pub fn key_binding<M>(press: KeyPress, on_action: impl Fn(Action) -> M) -> Optio
     }
 }
 
-/// A text box's editor: libcosmic's `text_editor` over `text_box`, its
-/// actions to `on_action`, the standard keys ([`key_binding`]), and the
-/// colours of a selection kept while it is unfocused
-/// ([`kept_selection_colours`]); a focused box's selection stays
+/// A text box's editor: libcosmic's `text_editor` over `text_box`, in the
+/// household's look of its kind ([`Look`]: prominent or normal, its window
+/// behind others or not), its actions to `on_action`, the standard keys
+/// ([`key_binding`]), and the colours of a selection kept while it is
+/// unfocused ([`kept_selection_colours`]); a focused box's selection stays
 /// libcosmic's, the solid accent and its on colour. An app with keys of its
-/// own sets its own `.key_binding(..)`, ending with [`key_binding`]. Put
-/// [`wrap`] round it (and round its text menu, if it has one).
+/// own sets its own `.key_binding(..)`, ending with [`key_binding`]; it sets
+/// no style of its own. Put [`wrap`] round it (and round its text menu, if
+/// it has one).
 pub fn editor<'a, P: Clone, M: Clone + 'static>(
     text_box: &'a TextBox<P>,
+    look: Look,
     on_action: impl Fn(Action) -> M + Clone + 'a,
 ) -> cosmic::widget::text_editor::TextEditor<'a, M> {
     let keys = on_action.clone();
     cosmic::widget::text_editor::text_editor(&text_box.content)
         .on_action(move |action| on_action(action.into()))
         .key_binding(move |press| key_binding(press, &keys))
+        .style(move |theme, status| editor_style(theme, status, look))
         .selection_fill(selection_fill)
         .selected_text_color(selected_text)
+}
+
+/// The editor in `look`: libcosmic's, on the page's colour, with the
+/// border of its kind and state. A kept selection is drawn with the
+/// unfocused border, the editor's own status being unfocused then
+fn editor_style(
+    theme: &cosmic::Theme,
+    status: text_editor::Status,
+    look: Look,
+) -> text_editor::Style {
+    use cosmic::iced::widget::text_editor::Catalog;
+    let mut style = Catalog::style(theme, &<cosmic::Theme as Catalog>::default(), status);
+    style.background = crate::look::background(theme);
+    let state = match status {
+        text_editor::Status::Focused { .. } => State::Focused,
+        text_editor::Status::Hovered => State::Hovered,
+        text_editor::Status::Active | text_editor::Status::Disabled => State::Rest,
+    };
+    style.border = look.border(theme, state);
+    style
 }
 
 /// The fill behind selected text: libcosmic's, or the kept look
@@ -658,12 +684,33 @@ fn beneath(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
     crate::kept::flat(style.background, theme.cosmic().bg_color().into())
 }
 
-/// `content`, a text box's [`editor`] or what wraps it (its text menu), as
-/// a text box: Shift+click extends the selection (as [`shift_click`]), and
+/// What [`wrap`] takes: a text box's [`editor`], or that editor in its text
+/// menu, and nothing else. A kept selection is drawn by drawing what is
+/// wrapped as if its editor were focused, with the box's colours told so:
+/// any other widget inside would be drawn so too
+pub trait Wrapped<'a, M>: Into<Element<'a, M>> + sealed::Sealed {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+impl<M> sealed::Sealed for cosmic::widget::text_editor::TextEditor<'_, M> {}
+impl<'a, M: Clone + 'static> Wrapped<'a, M> for cosmic::widget::text_editor::TextEditor<'a, M> {}
+impl<M> sealed::Sealed
+    for crate::text_menu::TextMenu<cosmic::widget::text_editor::TextEditor<'_, M>, M>
+{
+}
+impl<'a, M: Clone + 'static> Wrapped<'a, M>
+    for crate::text_menu::TextMenu<cosmic::widget::text_editor::TextEditor<'a, M>, M>
+{
+}
+
+/// `content`, a text box's [`editor`] or that editor in its text menu, as a
+/// text box: Shift+click extends the selection (as [`shift_click`]), and
 /// the selection, kept while the box is unfocused, is drawn dimmed. Its
 /// actions go to `on_action`, as the editor's
 pub fn wrap<'a, P: Clone, M: Clone + 'a>(
-    content: impl Into<Element<'a, M>>,
+    content: impl Wrapped<'a, M>,
     text_box: &TextBox<P>,
     on_action: impl Fn(Action) -> M,
 ) -> Element<'a, M> {
