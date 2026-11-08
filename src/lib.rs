@@ -19,6 +19,8 @@
 #[macro_use]
 mod forward;
 pub mod layout;
+#[doc(hidden)]
+pub mod history;
 mod kept;
 mod level;
 pub mod menu;
@@ -32,6 +34,7 @@ mod text_button;
 pub mod text_menu;
 mod tooltip;
 
+pub use history::{Turn, Undoable};
 pub use level::{LEVEL_CAP, Level};
 pub use scroll::horizontal_scroll;
 pub use short_text_box::ShortTextBox;

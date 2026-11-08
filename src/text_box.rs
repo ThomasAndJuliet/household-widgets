@@ -66,8 +66,9 @@
 //! and keys over a value the app keeps.
 
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::ops::Deref;
+
+use crate::history::{History, Run};
 
 use cosmic::Element;
 use cosmic::iced::advanced::layout::{self, Layout};
@@ -80,13 +81,7 @@ use cosmic::iced::{Color, Event, Length, Point, Rectangle, Size, Vector};
 use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion, Position};
 
-/// The steps Ctrl+Z can go back
-pub const STEPS: usize = 300;
-
-/// The most text a box's history keeps, in bytes, the oldest steps going
-/// first: a long draft pasted again and again stays in bounds
-pub const BYTES: usize = 8 << 20;
-
+pub use crate::history::{BYTES, STEPS, Turn, Undoable};
 pub use crate::kept::kept_selection_colours;
 
 /// iced's text and caret, which a [`TextBox`] holds
@@ -141,174 +136,12 @@ pub enum Caret {
     At(Cursor),
 }
 
-/// A state a history keeps, and what it costs to keep
-pub(crate) trait Kept {
-    fn bytes(&self) -> usize;
-}
-
-/// The steps a box can go back and forward through: each the state before
-/// it (in `undo`) or after it (in `redo`), and the app's own part of it, if
-/// any. `S` is a box's whole state, so that going back is putting it back: a
-/// text editor's text and caret, a one-line box's value and caret. At most
-/// [`STEPS`] steps and [`BYTES`] bytes. One history for both kinds of box,
-/// so that Ctrl+Z goes back by the same steps in each.
-#[derive(Debug)]
-pub(crate) struct History<S, P> {
-    pub(crate) undo: VecDeque<(S, Option<P>)>,
-    pub(crate) redo: Vec<(S, Option<P>)>,
-    /// What `undo` and `redo` hold, in bytes
-    bytes: usize,
-}
-
-impl<S, P> Default for History<S, P> {
-    fn default() -> Self {
-        Self {
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-            bytes: 0,
-        }
-    }
-}
-
-impl<S: Kept, P: Clone> History<S, P> {
-    pub(crate) fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-
-    pub(crate) fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-
-    /// The app's part of the step Undo would take back, if it has one
-    pub(crate) fn undo_part(&self) -> Option<&P> {
-        self.undo.back().and_then(|(_, part)| part.as_ref())
-    }
-
-    /// The app's part of the step Redo would bring back, if it has one
-    pub(crate) fn redo_part(&self) -> Option<&P> {
-        self.redo.last().and_then(|(_, part)| part.as_ref())
-    }
-
-    /// A step taken from `before`, with the app's `part` of it: what Redo
-    /// would have brought back is gone
-    pub(crate) fn record(&mut self, before: S, part: Option<P>) {
-        self.drop_redo();
-        self.bytes += before.bytes();
-        self.undo.push_back((before, part));
-        while self.undo.len() > STEPS || (self.bytes > BYTES && self.undo.len() > 1) {
-            let (oldest, _) = self.undo.pop_front().expect("a step");
-            self.bytes -= oldest.bytes();
-        }
-    }
-
-    /// The state before the last step and its part, `now` kept for Redo
-    pub(crate) fn undo(&mut self, now: S) -> Option<(S, Option<P>)> {
-        let (before, part) = self.undo.pop_back()?;
-        self.bytes = self.bytes + now.bytes() - before.bytes();
-        self.redo.push((now, part.clone()));
-        Some((before, part))
-    }
-
-    /// The state after the step last undone and its part, `now` kept for
-    /// Undo
-    pub(crate) fn redo(&mut self, now: S) -> Option<(S, Option<P>)> {
-        let (after, part) = self.redo.pop()?;
-        self.bytes = self.bytes + now.bytes() - after.bytes();
-        self.undo.push_back((now, part.clone()));
-        Some((after, part))
-    }
-
-    /// What Redo would have brought back is gone, the steps before kept
-    pub(crate) fn drop_redo(&mut self) {
-        self.bytes -= self.redo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
-    }
-
-    /// The history ends at the nearest step with a part either way: it,
-    /// and all beyond it, gone
-    pub(crate) fn cut_at_parts(&mut self) {
-        if let Some(at) = self.undo.iter().rposition(|(_, part)| part.is_some()) {
-            self.bytes -= self
-                .undo
-                .drain(..=at)
-                .map(|(s, _)| s.bytes())
-                .sum::<usize>();
-        }
-        if let Some(at) = self.redo.iter().rposition(|(_, part)| part.is_some()) {
-            self.bytes -= self
-                .redo
-                .drain(..=at)
-                .map(|(s, _)| s.bytes())
-                .sum::<usize>();
-        }
-    }
-}
-
-/// The run of typing or deleting going on, which the next edit of the same
-/// kind joins as part of the same step
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Run {
-    /// Typing; whether the last character was a space or new line
-    Typing {
-        space: bool,
-    },
-    Deleting,
-}
-
-impl Run {
-    /// Whether `next`, after this, is part of the same step: typing goes on
-    /// until a space after a word starts the next step
-    fn joined_by(self, next: Run) -> bool {
-        match (self, next) {
-            (Run::Typing { space }, Run::Typing { space: next }) => space || !next,
-            (Run::Deleting, Run::Deleting) => true,
-            _ => false,
-        }
-    }
-
-    /// Whether an edit of the kind `next` (`None`: a paste, a cut, a word
-    /// deleted, anything else) is part of the step `going` on: typing over
-    /// a selection starts a step, which the typing after it joins
-    pub(crate) fn joins(going: Option<Run>, next: Option<Run>, selected: bool) -> bool {
-        !selected
-            && match (going, next) {
-                (Some(going), Some(next)) => going.joined_by(next),
-                _ => false,
-            }
-    }
-}
-
-/// A box with an undo history, as a menu's Undo and Redo show it
-/// ([`crate::TextMenuHistory::of`]): a [`TextBox`] or a
-/// [`ShortTextBox`](crate::ShortTextBox)
-pub trait Undoable {
-    /// The box's action, as its widget publishes it
-    type Action;
-    /// The action that undoes, and the one that redoes
-    const UNDO: Self::Action;
-    const REDO: Self::Action;
-    fn can_undo(&self) -> bool;
-    fn can_redo(&self) -> bool;
-}
-
-impl<P: Clone> Undoable for TextBox<P> {
-    type Action = Action;
-    const UNDO: Action = Action::Undo;
-    const REDO: Action = Action::Redo;
-
-    fn can_undo(&self) -> bool {
-        self.history.can_undo()
-    }
-
-    fn can_redo(&self) -> bool {
-        self.history.can_redo()
-    }
-}
-
 /// A text editor's whole state, to go back to: its text, its caret and
 /// selection, and how it selects (a word or line selected by a double or
 /// triple click is put back as one, not as the point clicked)
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
-struct Snapshot {
+pub struct Snapshot {
     text: String,
     cursor: Cursor,
     selecting: Selecting,
@@ -321,12 +154,6 @@ enum Selecting {
     Plain,
     Words,
     Lines,
-}
-
-impl Kept for Snapshot {
-    fn bytes(&self) -> usize {
-        self.text.len()
-    }
 }
 
 /// A text box's text and caret, with its undo history; see the module's
@@ -347,8 +174,6 @@ impl Kept for Snapshot {
 pub struct TextBox<P = ()> {
     content: Content,
     history: History<Snapshot, P>,
-    /// The run of typing or deleting going on, if any
-    run: Option<Run>,
     /// Where the selection began before the click just done, for its
     /// [`Action::Extend`], and whether iced took the click for a double or
     /// triple one; only ever the last action's
@@ -363,19 +188,10 @@ impl<P> Default for TextBox<P> {
         Self {
             content: Content::default(),
             history: History::default(),
-            run: None,
             clicked_from: None,
             last_click: None,
         }
     }
-}
-
-/// A step with the app's part undone or redone: the part, for the app to
-/// undo or redo its own side of it
-#[derive(Clone, Debug, PartialEq)]
-pub enum Turn<P> {
-    Undone(P),
-    Redone(P),
 }
 
 impl<P> Deref for TextBox<P> {
@@ -386,13 +202,52 @@ impl<P> Deref for TextBox<P> {
     }
 }
 
+impl<P: Clone> Undoable for TextBox<P> {
+    type Action = Action;
+    type Part = P;
+    type Caret = Caret;
+    type State = Snapshot;
+    const UNDO: Action = Action::Undo;
+    const REDO: Action = Action::Redo;
+
+    fn history(&self) -> &History<Snapshot, P> {
+        &self.history
+    }
+
+    fn history_mut(&mut self) -> &mut History<Snapshot, P> {
+        &mut self.history
+    }
+
+    fn state(&self) -> (Snapshot, usize) {
+        let snapshot = self.snapshot();
+        let bytes = snapshot.text.len();
+        (snapshot, bytes)
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.put_back(snapshot);
+    }
+
+    fn set(&mut self, text: &str, caret: Caret) {
+        self.set_text(text, caret);
+    }
+
+    fn holds(&self, text: &str) -> bool {
+        self.content.text() == text
+    }
+
+    fn unchanged(&mut self, caret: Caret) {
+        let text = self.content.text();
+        self.set_text(&text, caret);
+    }
+}
+
 impl<P> std::fmt::Debug for TextBox<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextBox")
             .field("text", &self.content.text())
             .field("cursor", &self.content.cursor())
-            .field("undo", &self.history.undo.len())
-            .field("redo", &self.history.redo.len())
+            .field("history", &self.history.len())
             .finish()
     }
 }
@@ -407,62 +262,15 @@ impl<P: Clone> TextBox<P> {
     /// undo: a draft opened, or a new one
     pub fn starting_with(text: &str, caret: Caret) -> Self {
         let mut text_box = Self::default();
-        text_box.set(text, caret);
+        text_box.set_text(text, caret);
         text_box
-    }
-
-    /// Whether Undo would change anything
-    pub fn can_undo(&self) -> bool {
-        self.history.can_undo()
-    }
-
-    /// Whether Redo would change anything
-    pub fn can_redo(&self) -> bool {
-        self.history.can_redo()
-    }
-
-    /// The text replaced by the app, the caret at `caret`: one step, which
-    /// Undo takes back
-    pub fn replace(&mut self, text: &str, caret: Caret) {
-        let before = self.snapshot();
-        self.set(text, caret);
-        if self.content.text() != before.text {
-            self.history.record(before, None);
-        }
-    }
-
-    /// The text replaced by the app as one step with `part`, the app's own
-    /// part of it, which Undo and Redo hand back: always a step, the text
-    /// changed or not
-    pub fn replace_with(&mut self, text: &str, caret: Caret, part: P) {
-        let before = self.snapshot();
-        self.set(text, caret);
-        self.history.record(before, Some(part));
-    }
-
-    /// The app's part of the step Undo would take back, if it has one
-    pub fn undo_part(&self) -> Option<&P> {
-        self.history.undo_part()
-    }
-
-    /// The app's part of the step Redo would bring back, if it has one
-    pub fn redo_part(&self) -> Option<&P> {
-        self.history.redo_part()
-    }
-
-    /// The steps with an app's part can no longer be undone or redone (the
-    /// app's side of them changed): the history ends at the nearest of them
-    /// either way, the steps of the text alone between kept. Going back
-    /// past one would bring back text its part took elsewhere
-    pub fn forget_parts(&mut self) {
-        self.history.cut_at_parts();
     }
 
     /// The text replaced by the app as part of its last step, which Undo
     /// takes back whole: a change made in steps of its own, as the saves of
     /// a message open in another editor. What Redo had is gone
     pub fn amend(&mut self, text: &str, caret: Caret) {
-        self.set(text, caret);
+        self.set_text(text, caret);
         self.history.drop_redo();
     }
 
@@ -471,22 +279,8 @@ impl<P: Clone> TextBox<P> {
     pub fn perform(&mut self, action: impl Into<Action>) -> Option<Turn<P>> {
         let clicked_from = self.clicked_from.take();
         match action.into() {
-            Action::Undo => {
-                if self.can_undo() {
-                    let now = self.snapshot();
-                    let (before, part) = self.history.undo(now).expect("a step to undo");
-                    self.restore(before);
-                    return part.map(Turn::Undone);
-                }
-            }
-            Action::Redo => {
-                if self.can_redo() {
-                    let now = self.snapshot();
-                    let (after, part) = self.history.redo(now).expect("a step to redo");
-                    self.restore(after);
-                    return part.map(Turn::Redone);
-                }
-            }
+            Action::Undo => return self.turn(true),
+            Action::Redo => return self.turn(false),
             Action::DeleteWordBefore => self.delete_word(Motion::WordLeft, Edit::Backspace),
             Action::DeleteWordAfter => self.delete_word(Motion::WordRight, Edit::Delete),
             // From where the selection began to where the click put the
@@ -513,14 +307,14 @@ impl<P: Clone> TextBox<P> {
             // menu opened, another widget clicked): a text box keeps it, as
             // in GTK and the browsers, for the menu's Cut and Copy and for
             // when the focus comes back
-            Action::Editor(text_editor::Action::ClearSelection) => self.run = None,
+            Action::Editor(text_editor::Action::ClearSelection) => self.history.end_run(),
             Action::Editor(text_editor::Action::Edit(edit)) => self.edit(edit),
             // A scroll leaves the caret where it is
             Action::Editor(scroll @ text_editor::Action::Scroll { .. }) => {
                 self.content.perform(scroll);
             }
             Action::Editor(action) => {
-                self.run = None;
+                self.history.end_run();
                 let clicked = match action {
                     text_editor::Action::Click(at) => {
                         self.last_click = Some(at);
@@ -550,7 +344,7 @@ impl<P: Clone> TextBox<P> {
             // A paste, an indent
             _ => None,
         };
-        let joins = Run::joins(self.run, run, selected);
+        let joins = self.history.joins(run, selected);
         let action = text_editor::Action::Edit(edit);
         let changed = if joins {
             self.content.perform(action);
@@ -560,13 +354,15 @@ impl<P: Clone> TextBox<P> {
         };
         // A key that changed nothing (Backspace at the start) is no run:
         // the next edit is not part of the step before
-        self.run = run.filter(|_| changed);
+        if !changed {
+            self.history.end_run();
+        }
     }
 
     /// A word deleted towards `motion`, or the selection if there is one:
     /// a step of its own
     fn delete_word(&mut self, motion: Motion, edit: Edit) {
-        self.run = None;
+        self.history.end_run();
         let selected = self.content.cursor().selection.is_some();
         self.change(|content| {
             if !selected {
@@ -581,12 +377,12 @@ impl<P: Clone> TextBox<P> {
     /// changed is told by the caret, the number of lines and the caret's
     /// line, which every change of the text moves or changes
     fn change(&mut self, change: impl FnOnce(&mut Content)) -> bool {
-        let before = self.snapshot();
+        let (before, bytes) = self.state();
         let mark = self.mark();
         change(&mut self.content);
         let changed = self.mark() != mark;
         if changed {
-            self.history.record(before, None);
+            self.history.record(before, bytes, None);
         }
         changed
     }
@@ -602,7 +398,7 @@ impl<P: Clone> TextBox<P> {
     }
 
     /// The text set, the caret at `caret`; no step
-    fn set(&mut self, text: &str, caret: Caret) {
+    fn set_text(&mut self, text: &str, caret: Caret) {
         self.content = Content::with_text(text);
         match caret {
             Caret::Start => {}
@@ -617,7 +413,7 @@ impl<P: Clone> TextBox<P> {
                 self.content.move_to(cursor);
             }
         }
-        self.run = None;
+        self.history.end_run();
         self.clicked_from = None;
     }
 
@@ -632,7 +428,7 @@ impl<P: Clone> TextBox<P> {
         }
     }
 
-    fn restore(&mut self, snapshot: Snapshot) {
+    fn put_back(&mut self, snapshot: Snapshot) {
         let Snapshot {
             text,
             cursor,
@@ -641,10 +437,10 @@ impl<P: Clone> TextBox<P> {
         let (anchor, select) = match (cursor.selection, selecting) {
             (Some(anchor), Selecting::Words) => (anchor, text_editor::Action::SelectWord),
             (Some(anchor), Selecting::Lines) => (anchor, text_editor::Action::SelectLine),
-            _ => return self.set(&text, Caret::At(cursor)),
+            _ => return self.set_text(&text, Caret::At(cursor)),
         };
         // Selected as it was: from the point clicked, the caret where it was
-        self.set(
+        self.set_text(
             &text,
             Caret::At(Cursor {
                 position: anchor,
@@ -909,6 +705,9 @@ type EditorState = text_editor::State<cosmic::iced::advanced::text::highlighter:
 struct FrameState {
     /// The modifiers held, as the window last said
     held: Modifiers,
+    /// Whether the editor has had the focus: a selection is only kept by a
+    /// box that had it (one the app selected in, never focused, shows none)
+    had_focus: bool,
     /// The content's tree with its editor focused, while the box is
     /// unfocused with a kept selection: what it is drawn from
     kept: Option<Tree>,
@@ -918,10 +717,11 @@ impl<M> Frame<'_, M> {
     /// The tree a kept selection is drawn from, made or let go as the box
     /// is now
     fn keep(&self, tree: &mut Tree) {
-        let unfocused = crate::kept::find::<EditorState>(&tree.children[0])
-            .is_some_and(|editor| !editor.is_focused());
+        let focused =
+            crate::kept::find::<EditorState>(&tree.children[0]).map(|editor| editor.is_focused());
         let state = tree.state.downcast_mut::<FrameState>();
-        if !(self.selected && unfocused) {
+        state.had_focus |= focused == Some(true);
+        if !(self.selected && state.had_focus && focused == Some(false)) {
             state.kept = None;
             return;
         }
@@ -1139,50 +939,5 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for Frame<'_, M> {
         self.content
             .as_widget()
             .a11y_nodes(layout, &tree.children[0], cursor)
-    }
-}
-
-/// The history's bounds, on states that say their own size
-#[cfg(test)]
-mod history_tests {
-    use super::{BYTES, History, Kept, STEPS};
-
-    struct State(usize);
-
-    impl Kept for State {
-        fn bytes(&self) -> usize {
-            self.0
-        }
-    }
-
-    #[test]
-    fn the_history_keeps_at_most_its_steps_and_bytes() {
-        let mut history: History<State, ()> = History::default();
-        for _ in 0..STEPS + 5 {
-            history.record(State(1), None);
-        }
-        assert_eq!(history.undo.len(), STEPS);
-        assert_eq!(history.bytes, STEPS);
-        // Big states: the oldest go first, the newest is always kept
-        let mut history: History<State, ()> = History::default();
-        for n in 1..=8 {
-            history.record(State(BYTES / 4 + n), None);
-        }
-        assert_eq!(history.undo.len(), 3);
-        assert_eq!(history.undo.front().map(|(s, _)| s.0), Some(BYTES / 4 + 6));
-        history.record(State(2 * BYTES), None);
-        assert_eq!(
-            history.undo.len(),
-            1,
-            "one step bigger than the bound is kept alone"
-        );
-        // Undo and Redo move bytes between the two, and a new step drops Redo
-        let mut history: History<State, ()> = History::default();
-        history.record(State(10), None);
-        let (before, _) = history.undo(State(20)).expect("a step");
-        assert_eq!((before.0, history.bytes), (10, 20));
-        history.record(State(5), None);
-        assert_eq!(history.bytes, 5);
-        assert!(history.redo.is_empty());
     }
 }

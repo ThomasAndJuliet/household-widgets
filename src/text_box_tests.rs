@@ -14,6 +14,7 @@ use cosmic::iced::runtime::user_interface::{Cache, UserInterface};
 use cosmic::iced::{Event, Font, Pixels, Point, Size, mouse};
 use cosmic::widget::text_editor::{self, Binding, Edit, KeyPress, Motion, Position, Status};
 
+use crate::Undoable;
 use crate::text_box::{Action, Caret, STEPS, TextBox, Turn, history_key, key_binding, shift_click};
 
 fn typed<P: Clone>(text_box: &mut TextBox<P>, text: &str) {

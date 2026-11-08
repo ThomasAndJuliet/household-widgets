@@ -57,10 +57,7 @@ pub struct TextMenuHistory<M> {
 
 impl<M> TextMenuHistory<M> {
     /// `text_box`'s history, `on_action` its message, as its widget's
-    pub fn of<B: crate::text_box::Undoable>(
-        text_box: &B,
-        on_action: impl Fn(B::Action) -> M,
-    ) -> Self {
+    pub fn of<B: crate::Undoable>(text_box: &B, on_action: impl Fn(B::Action) -> M) -> Self {
         Self {
             can_undo: text_box.can_undo(),
             can_redo: text_box.can_redo(),
@@ -507,4 +504,4 @@ where
 
 #[cfg(test)]
 #[path = "text_menu_tests.rs"]
-mod tests;
+pub(crate) mod tests;

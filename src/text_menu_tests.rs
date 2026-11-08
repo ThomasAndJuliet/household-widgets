@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::*;
+use crate::Undoable;
 use crate::menu::Row;
 use std::rc::Rc;
 
-fn words() -> TextMenuWords {
+pub(crate) fn words() -> TextMenuWords {
     TextMenuWords {
         cut: "Cut".into(),
         copy: "Copy".into(),
@@ -394,7 +395,7 @@ impl Clipboard for Board {
 fn body(text: String) -> Element<'static, TextMenuCommand> {
     cosmic::widget::text(text).into()
 }
-fn style() -> MenuStyle<TextMenuCommand> {
+pub(crate) fn style() -> MenuStyle<TextMenuCommand> {
     MenuStyle { icon, body }
 }
 fn renderer() -> Renderer {
