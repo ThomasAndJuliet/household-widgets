@@ -95,7 +95,7 @@ Household rule 25a (Juliet, 8 Nov 2026, from the sheet in household-ui `sheets/t
 
 Selected text on the solid accent is the text's own colour moved as far as reading needs, a grey going to the accent's on colour (rule 6, "What is drawn on a fill"). Both are rounded at libcosmic's `radius_s` and filled with the page's colour (rule 25d's light tone). A kept selection keeps the unfocused border. The rest colour is #5c5c5c on a dark theme and libcosmic's divider on a light one. The colour maths (`rest_border`, `hovered_border`, `faded_accent`, `muted_accent`) is household-tones'. An editable label (`short_text_box::editable`) keeps libcosmic's label look until it is edited.
 
-Whether a window is behind others is the app's to say, per box, as it builds that window's view: `Look::behind(bool)` for an editor, `Field::behind(bool)` for a field. A theme-level value would not do: libcosmic draws every window with the theme of the window in front.
+Whether a window is behind others is the app's to say, per box, as it builds that window's view: `Look::behind(bool)` for an editor, `Field::behind(bool)` for a field. A theme-level value would not do: libcosmic draws every window with the theme of the window in front, which is also why an app whose windows have accents of their own (the terminal's tab colours) gives a prominent box its window's own with `Look::accent(colour)`.
 
 ### The short text box
 

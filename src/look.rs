@@ -24,13 +24,15 @@ use cosmic::iced::{Background, Border, Color};
 use household_tones::{Mode, Role, Srgb, faded_accent, hovered_border, rest_border};
 
 /// Which of the two kinds of text box, and whether its window is behind
-/// others. A window knows the second (it is drawn with its own theme while
-/// another has the keys): the app says it per box, as each window's view is
-/// built, with [`Look::behind`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// others. Only the app knows the second, per window, so it says so per
+/// box as it builds each window's view ([`Look::behind`]); and libcosmic
+/// draws every window in the theme of the window in front, so an app whose
+/// windows have accents of their own says the box's own ([`Look::accent`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Look {
     prominent: bool,
     behind: bool,
+    accent: Option<Color>,
 }
 
 /// A box's state, as its border shows it
@@ -52,13 +54,22 @@ impl Look {
     pub fn prominent() -> Self {
         Self {
             prominent: true,
-            behind: false,
+            ..Self::default()
         }
     }
 
     /// Whether the box's window is behind others
     pub fn behind(self, behind: bool) -> Self {
         Self { behind, ..self }
+    }
+
+    /// The accent of the box's own window, where the theme it is drawn in
+    /// is another window's: a prominent box focuses in it, or fades it
+    pub fn accent(self, accent: Color) -> Self {
+        Self {
+            accent: Some(accent),
+            ..self
+        }
     }
 
     /// The box's border in `state`, for an app's tests to say what it
@@ -72,7 +83,7 @@ impl Look {
         ));
         let (width, color) = match (self.prominent, state) {
             (true, State::Focused) => {
-                let accent: Color = cosmic.accent_color().into();
+                let accent = self.accent.unwrap_or_else(|| cosmic.accent_color().into());
                 let colour = match self.behind {
                     true => opaque(faded_accent(rgba(accent), rgba(rest), srgb(page))),
                     false => accent,
