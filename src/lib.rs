@@ -10,6 +10,8 @@
 //! - [`text_box`]: a text box that does what a text box does: [`TextBox`],
 //!   iced's text and caret with an undo history, its standard keys and
 //!   Shift+click, and its selection drawn dimmed while unfocused.
+//! - [`short_text_box`]: the one-line text box, [`ShortTextBox`] and its
+//!   widget, sharing the text box's history, steps and keys.
 //!
 //! Plain colour maths stays in household-kit's `household-tones`; this
 //! crate turns it into libcosmic's types.
@@ -19,6 +21,7 @@ mod forward;
 mod kept;
 mod level;
 pub mod menu;
+pub mod short_text_box;
 mod switch;
 pub mod text_box;
 mod text_button;
@@ -26,12 +29,15 @@ pub mod text_menu;
 mod tooltip;
 
 pub use level::{LEVEL_CAP, Level};
+pub use short_text_box::ShortTextBox;
 pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 pub use text_box::TextBox;
 pub use text_button::{BUTTON_HEIGHT, Tertiary, TextButton, button_padding};
 pub use text_menu::{TextMenu, TextMenuHistory, TextMenuWords, text_menu};
 pub use tooltip::{TIP_WIDTH, link_tooltip, tip_bubble, tip_padding, tooltip_unless, tooltip_with};
 
+#[cfg(test)]
+mod short_text_box_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]
