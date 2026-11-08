@@ -216,6 +216,8 @@ The text box: "You were asked to implement a input text box. This obviously incl
 | `text_box::standard_keys()` | the keys a text box adds to iced's and what each does, the one list: the key binding goes by it, and an app shows it in its shortcuts and menus |
 | `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
 | `text_box::editor(&text_box, look, on_action)` | libcosmic's `text_editor` over the box in the household look (`Look::prominent()` or `Look::normal()`, `.behind(window_behind)`): its actions, the standard keys, and the colours of a kept selection; set the rest (`.id`, `.placeholder`, `.padding`, an app's own `.key_binding`) on it, but no style |
+| `text_box::styled(editor, look)` | an editor over text that is not a `TextBox`'s (a read-only source shown) in the same look |
+| `look::State`, `Look::border(&theme, state)` | the border a kind draws in a state, for an app's tests to say what they expect |
 | `text_box::wrap(editor, &text_box, on_action)` | round the editor, or the editor in its text menu, and nothing else (the type allows only those): Shift+click extends the selection, and the selection kept while the box is unfocused is drawn dimmed |
 | `text_box::shift_click(editor, extend)` | Shift+click alone, for a box with an editor of its own |
 
@@ -232,7 +234,7 @@ Household rule 25a (Juliet, 8 Nov 2026, from the sheet in household-ui `sheets/t
 | **Prominent** (a window's main input; the text box only) | 4 px rest colour | as at rest | 4 px accent | 4 px accent faded halfway |
 | **Normal** (every other box and field) | 1 px rest colour | 1 px, the rest colour a 0.35 step towards the text | 2 px muted accent | 2 px rest colour |
 
-Both are rounded at libcosmic's `radius_s` and filled with the page's colour (rule 25d's light tone). A kept selection keeps the unfocused border. The rest colour is #5c5c5c on a dark theme and libcosmic's divider on a light one. The colour maths (`rest_border`, `hovered_border`, `faded_accent`, `muted_accent`) is household-tones'. An editable label (`short_text_box::editable`) keeps libcosmic's label look until it is edited.
+Selected text on the solid accent is the text's own colour moved as far as reading needs, a grey going to the accent's on colour (rule 6, "What is drawn on a fill"). Both are rounded at libcosmic's `radius_s` and filled with the page's colour (rule 25d's light tone). A kept selection keeps the unfocused border. The rest colour is #5c5c5c on a dark theme and libcosmic's divider on a light one. The colour maths (`rest_border`, `hovered_border`, `faded_accent`, `muted_accent`) is household-tones'. An editable label (`short_text_box::editable`) keeps libcosmic's label look until it is edited.
 
 Whether a window is behind others is the app's to say, per box, as it builds that window's view: `Look::behind(bool)` for an editor, `Field::behind(bool)` for a field. A theme-level value would not do: libcosmic draws every window with the theme of the window in front.
 

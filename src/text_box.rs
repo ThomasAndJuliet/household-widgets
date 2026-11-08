@@ -634,9 +634,20 @@ pub fn editor<'a, P: Clone, M: Clone + 'static>(
     on_action: impl Fn(Action) -> M + Clone + 'a,
 ) -> cosmic::widget::text_editor::TextEditor<'a, M> {
     let keys = on_action.clone();
-    cosmic::widget::text_editor::text_editor(&text_box.content)
+    let editor = cosmic::widget::text_editor::text_editor(&text_box.content)
         .on_action(move |action| on_action(action.into()))
-        .key_binding(move |press| key_binding(press, &keys))
+        .key_binding(move |press| key_binding(press, &keys));
+    styled(editor, look)
+}
+
+/// `editor`, an editor over text that is not a [`TextBox`]'s (a read-only
+/// source shown, say), in the household look of text boxes, as [`editor`]
+/// draws a text box's
+pub fn styled<'a, M: Clone + 'static>(
+    editor: cosmic::widget::text_editor::TextEditor<'a, M>,
+    look: Look,
+) -> cosmic::widget::text_editor::TextEditor<'a, M> {
+    editor
         .style(move |theme, status| editor_style(theme, status, look))
         .selection_fill(selection_fill)
         .selected_text_color(selected_text)
@@ -670,12 +681,21 @@ fn selection_fill(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
     }
 }
 
-/// The colour of selected text: libcosmic's (its editor's own choice, the
-/// accent's on colour), or the kept look
+/// The colour of selected text: on the solid accent, the text's own colour
+/// moved as far as reading needs, a grey going to the accent's on colour
+/// (rule 6, "What is drawn on a fill"); or the kept look
 fn selected_text(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
     match crate::kept::drawing() {
         Some(_) => kept_selection_colours(theme, style.value, beneath(theme, style)).1,
-        None => theme.cosmic().accent.on.into(),
+        None => {
+            let srgb = |c: Color| household_tones::Srgb::new(c.r, c.g, c.b);
+            let on = household_tones::on_fill(
+                srgb(style.value),
+                srgb(style.selection),
+                srgb(theme.cosmic().accent.on.into()),
+            );
+            Color::from_rgb(on.r, on.g, on.b)
+        }
     }
 }
 
