@@ -18,6 +18,8 @@
 
 #[macro_use]
 mod forward;
+#[doc(hidden)]
+pub mod history;
 mod kept;
 mod level;
 pub mod menu;
@@ -28,6 +30,7 @@ mod text_button;
 pub mod text_menu;
 mod tooltip;
 
+pub use history::{Turn, Undoable};
 pub use level::{LEVEL_CAP, Level};
 pub use short_text_box::ShortTextBox;
 pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};

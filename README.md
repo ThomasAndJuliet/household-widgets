@@ -64,11 +64,13 @@ The text box: "You were asked to implement a input text box. This obviously incl
 | --- | --- |
 | `TextBox::new()`, `TextBox::starting_with(text, caret)` | a box's text and caret with its undo history, nothing to undo yet; it derefs to iced's `Content`, so `text_editor(&text_box)`, `.text()`, `.selection()`. `caret` is a `text_box::Caret`: `Start`, `End`, or `At(cursor)` |
 | `text_box.perform(action)` | does a `text_box::Action`: iced's own (`text_editor::Action` converts into it), `Undo`, `Redo`, `DeleteWordBefore`, `DeleteWordAfter`, `Extend` |
-| `text_box.replace(text, caret)` | the app's change of the whole text: one step Ctrl+Z takes back |
+| `text_box.replace(text, caret)` | the app's change of the whole text: one step Ctrl+Z takes back; the same text again is no step |
 | `text_box.amend(text, caret)` | the same change again, part of the last step (the saves of a text open in another editor) |
 | `text_box.replace_with(text, caret, part)` | one step that is more than the text: `part`, the app's own side of it (a card stashed), comes back from `perform` as `Turn::Undone(part)` or `Turn::Redone(part)` for the app to undo or redo; `TextBox<P>` holds parts of type `P` |
 | `text_box.undo_part()`, `text_box.redo_part()`, `text_box.forget_parts()` | before Undo or Redo, the part it would hand back; if the app can no longer undo or redo such parts, the history ends at the nearest of them, the typing between kept |
 | `text_box.can_undo()`, `text_box.can_redo()` | for a menu's Undo and Redo |
+
+`replace`, `replace_with`, the parts and `can_undo`/`can_redo` are the trait `household_widgets::Undoable`, written once for both boxes over one history (module `history`): import it to call them.
 | `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
 | `text_box::standard_keys()` | the keys a text box adds to iced's and what each does, the one list: the key binding goes by it, and an app shows it in its shortcuts and menus |
 | `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
@@ -89,16 +91,17 @@ A new draft is a new `TextBox` (the terminal's prompt, once sent). The history k
 | `ShortTextBox::new()`, `ShortTextBox::starting_with(text)` | a field's value with its undo history, nothing to undo yet; it derefs to the `str`, and `.value()`. A value that is where the field starts (a page number shown as the pages move) is a new box |
 | `ShortTextBox::password()` | a password's box: it keeps no history, as in GTK |
 | `short.perform(action)` | does a `short_text_box::Action`: the field's `Edit`, `Undo`, `Redo`; a step with the app's part hands it back as `Turn` |
-| `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret` |
-| `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's |
+| `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret`, a `short_text_box::Caret` (`Start`, `End`, `At { anchor, caret }` in graphemes). The same value again by `replace` is nothing: no step, and the caret left where it is |
+| `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's (`Undoable`) |
 | `short_text_box::text(&short, placeholder, on_action)` | the field, as libcosmic's `text_input` |
 | `short_text_box::search(&short, placeholder, on_action)` | as `search_input`; `.on_clear(message)` shows its clear button, and the app clears the box with `replace` |
-| `short_text_box::secure(&short, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, with its show-or-hide button when `on_toggle` is given |
-| `.on_submit(message)`, `.id(..)`, `.width(..)`, `.padding(..)`, `.size(..)` | on the field: Enter publishes `message`; the rest as `text_input`'s |
+| `short_text_box::secure(&short, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, with its show-or-hide button when `on_toggle` is given; only a password's box, and a password's box only here (either mistake panics) |
+| `short_text_box::inline(..)`, `short_text_box::editable(.., editing, on_toggle_edit)` | as `inline_input` and `editable_input` |
+| `.on_submit(m)`, `.on_clear(m)`, `.on_focus(m)`, `.on_unfocus(m)`, `.on_tab(m)`, `.on_paste(f)`, `.id`, `.width`, `.padding`, `.size`, `.font`, `.label`, `.helper_text`, `.error`, `.select_on_focus`, `.leading_icon`, `.trailing_icon`, `.style` | on the field, passed on to libcosmic's input with the app's own messages; `.on_paste` is told after the box's own edit, and `.style` keeps the kept selection's look |
 
 The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short, on_action))` for its menu with Undo · Redo, as a text box's editor is; a password's has no history to offer.
 
-**Shared with the text box, one copy each:** the history and its bounds, the rules that make its steps (a run of typing ended by moving the caret, by a space after a word, by changing between typing and deleting; a paste, a cut, a word deleted and the app's change a step each; typing over a selection one step with the typing after it), the app's part of a step (rule 19b), `Caret`, `standard_keys()` and its key matching, the text menu's Undo · Redo (`TextMenuHistory::of` takes either box), and the kept selection's look and drawing.
+**Shared with the text box, one copy each:** the history and its bounds, the rules that make its steps (a run of typing ended by moving the caret, by a space after a word, by changing between typing and deleting; a paste, a cut, a word deleted and the app's change a step each; typing over a selection one step with the typing after it), the app's part of a step (rule 19b), everything `Undoable` offers, `standard_keys()` and its key matching, the text menu's Undo · Redo (`TextMenuHistory::of` takes either box), and the kept selection's look and drawing.
 
 **Different, as one-line fields are:**
 
@@ -108,7 +111,7 @@ The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short
 - Ctrl+Backspace and Ctrl+Delete are libcosmic's own, by words (to the start or end in a password), so they are not written again here; Shift+click, which `text_input` lacks, is added.
 - libcosmic's input lets its selection go on Esc and Tab and keeps it when a press elsewhere takes the focus (a menu opened): that kept selection is the one drawn dimmed.
 
-**The kinds** are libcosmic's own constructors, one function each, giving one widget, `Field`: the look of each stays libcosmic's, and everything else is the same code.
+**The kinds** are libcosmic's own constructors, one function each, giving one widget, `Field`: the look of each stays libcosmic's, and everything else is the same code. What an input method commits is typing, part of the run going on.
 
 ## Depending on it
 
