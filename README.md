@@ -54,6 +54,33 @@ caret or tooltip wrappers outside the resulting element. Enable this crate's
 wrapped target contributes its accessibility nodes. The app's libcosmic
 patch must also resolve `iced_accessibility` to the same fork revision.
 
+`layout::responsive(max_level, view)` measures native representations with the
+actual renderer and chooses the first permitted level that fits. The factory
+receives `layout::Level::{Preferred, Mild, Strong, AllPermitted}`. A parent can
+raise the permitted level through its own simple layout stages. The first native
+adapter handles one fixed arrangement with increasing levels; it does not try
+different arrangements or schedule individual children. `.width(..)` and
+`.height(..)` set its allocation; the defaults are fill width and shrink height.
+Factories must have no application side effects: measurements create and discard
+fresh elements and state trees, with the runtime's named states isolated.
+
+The pure `layout::first_fitting(max_level, available_size, measure)` query returns
+`None` when no representation fits. The native adapter then gives the last
+permitted representation the available constraints; this fallback does not claim
+it fits. `layout::allocate_width(available, capacities)` shares a shortage at each
+child's original `weight * (preferred - minimum)` rate, clamps at minima, and
+redistributes using the remaining original rates. Higher weights shrink faster;
+zero protects preferred width. It leaves surplus unallocated and returns an
+explicit error if the lower bounds cannot fit.
+
+Selected controls use native tree reconciliation, retaining compatible focus
+and open inline dropdowns on resize. Replacing a row with a dropdown discards
+incompatible native state and its inline overlay; focus is not transferred
+between control types. External surface popups require their owner's lifecycle
+handling. Native dropdown accessibility and operation support remain limited by
+libcosmic; the adapter forwards the selected control's existing capabilities.
+Enable the shared `a11y` feature when the app enables libcosmic accessibility.
+
 ## Depending on it
 
 ```toml
