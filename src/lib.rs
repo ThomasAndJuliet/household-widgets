@@ -22,7 +22,7 @@ mod forward;
 pub mod history;
 mod kept;
 mod level;
-mod look;
+pub mod look;
 pub mod menu;
 pub mod short_text_box;
 mod switch;

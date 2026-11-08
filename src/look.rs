@@ -35,7 +35,7 @@ pub struct Look {
 
 /// A box's state, as its border shows it
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum State {
+pub enum State {
     Rest,
     Hovered,
     Focused,
@@ -61,8 +61,9 @@ impl Look {
         Self { behind, ..self }
     }
 
-    /// The box's border in `state`
-    pub(crate) fn border(self, theme: &Theme, state: State) -> Border {
+    /// The box's border in `state`, for an app's tests to say what it
+    /// expects
+    pub fn border(self, theme: &Theme, state: State) -> Border {
         let cosmic = theme.cosmic();
         let page = page(theme);
         let rest = colour(rest_border(
