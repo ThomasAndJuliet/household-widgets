@@ -42,7 +42,8 @@ pub struct TextMenuWords {
 
 /// A text box's undo history, as its menu offers it: Undo and Redo after
 /// Select all, each publishing the box's own message (Juliet approved, 7
-/// Nov 2026). Made from a [`TextBox`](crate::TextBox) by [`Self::of`]
+/// Nov 2026). Made from a [`TextBox`](crate::TextBox) or a
+/// [`ShortTextBox`](crate::ShortTextBox) by [`Self::of`]
 #[derive(Clone)]
 pub struct TextMenuHistory<M> {
     pub can_undo: bool,
@@ -55,16 +56,16 @@ pub struct TextMenuHistory<M> {
 }
 
 impl<M> TextMenuHistory<M> {
-    /// `text_box`'s history, `on_action` its message, as its editor's
-    pub fn of<P: Clone>(
-        text_box: &crate::TextBox<P>,
-        on_action: impl Fn(crate::text_box::Action) -> M,
+    /// `text_box`'s history, `on_action` its message, as its widget's
+    pub fn of<B: crate::text_box::Undoable>(
+        text_box: &B,
+        on_action: impl Fn(B::Action) -> M,
     ) -> Self {
         Self {
             can_undo: text_box.can_undo(),
             can_redo: text_box.can_redo(),
-            undo: on_action(crate::text_box::Action::Undo),
-            redo: on_action(crate::text_box::Action::Redo),
+            undo: on_action(B::UNDO),
+            redo: on_action(B::REDO),
             read_only: false,
         }
     }

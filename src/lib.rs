@@ -9,7 +9,7 @@
 //! - [`muted_colours`]: the muted accent of a theme, and what goes on it.
 //! - [`text_box`]: a text box that does what a text box does: [`TextBox`],
 //!   iced's text and caret with an undo history, its standard keys and
-//!   Shift+click.
+//!   Shift+click, and its selection drawn dimmed while unfocused.
 //!
 //! Plain colour maths stays in household-kit's `household-tones`; this
 //! crate turns it into libcosmic's types.
@@ -17,6 +17,7 @@
 #[macro_use]
 mod forward;
 pub mod layout;
+mod kept;
 mod level;
 pub mod menu;
 mod scroll;

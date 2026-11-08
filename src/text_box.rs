@@ -57,11 +57,13 @@
 //! key is not captured and goes on to the app (an app's own Ctrl+Z, the
 //! terminal's ^Z). Focused, a key the box takes is captured.
 //!
-//! **One-line boxes** (`text_input`) will get the same through a history
-//! over the value the app keeps (`String` states in the same history, with
-//! the same steps, told apart by comparing each new value with the last),
-//! and a wrapper like [`shift_click`]'s that takes the undo keys while the
-//! input it wraps is focused. A password box keeps no history, as in GTK.
+//! **Unfocused, the selection is kept and drawn dimmed**, as GTK draws a
+//! window's selection when it is not the focus: what the menu's Cut or Copy
+//! acts on is always seen. [`editor`] gives the box its colours and [`wrap`]
+//! draws it so; see [`kept_selection_colours`] for the look.
+//!
+//! **One-line boxes** are [`crate::short_text_box`]: the same history, steps
+//! and keys over a value the app keeps.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -70,10 +72,11 @@ use std::ops::Deref;
 use cosmic::Element;
 use cosmic::iced::advanced::layout::{self, Layout};
 use cosmic::iced::advanced::renderer;
+use cosmic::iced::advanced::widget::operation::Focusable;
 use cosmic::iced::advanced::widget::{Operation, Tree, Widget, tree};
 use cosmic::iced::advanced::{Clipboard, Shell, mouse, overlay};
 use cosmic::iced::keyboard::{self, Key, Modifiers, key::Named, key::Physical};
-use cosmic::iced::{Event, Length, Point, Rectangle, Size, Vector};
+use cosmic::iced::{Color, Event, Length, Point, Rectangle, Size, Vector};
 use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 use cosmic::widget::text_editor::{self, Binding, Cursor, Edit, KeyPress, Motion, Position};
 
@@ -83,6 +86,8 @@ pub const STEPS: usize = 300;
 /// The most text a box's history keeps, in bytes, the oldest steps going
 /// first: a long draft pasted again and again stays in bounds
 pub const BYTES: usize = 8 << 20;
+
+pub use crate::kept::kept_selection_colours;
 
 /// iced's text and caret, which a [`TextBox`] holds
 pub type Content = text_editor::Content<cosmic::Renderer>;
@@ -137,19 +142,20 @@ pub enum Caret {
 }
 
 /// A state a history keeps, and what it costs to keep
-trait Kept {
+pub(crate) trait Kept {
     fn bytes(&self) -> usize;
 }
 
 /// The steps a box can go back and forward through: each the state before
 /// it (in `undo`) or after it (in `redo`), and the app's own part of it, if
 /// any. `S` is a box's whole state, so that going back is putting it back: a
-/// text editor's text and caret, a one-line box's value. At most [`STEPS`]
-/// steps and [`BYTES`] bytes.
+/// text editor's text and caret, a one-line box's value and caret. At most
+/// [`STEPS`] steps and [`BYTES`] bytes. One history for both kinds of box,
+/// so that Ctrl+Z goes back by the same steps in each.
 #[derive(Debug)]
-struct History<S, P> {
-    undo: VecDeque<(S, Option<P>)>,
-    redo: Vec<(S, Option<P>)>,
+pub(crate) struct History<S, P> {
+    pub(crate) undo: VecDeque<(S, Option<P>)>,
+    pub(crate) redo: Vec<(S, Option<P>)>,
     /// What `undo` and `redo` hold, in bytes
     bytes: usize,
 }
@@ -165,9 +171,27 @@ impl<S, P> Default for History<S, P> {
 }
 
 impl<S: Kept, P: Clone> History<S, P> {
+    pub(crate) fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub(crate) fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// The app's part of the step Undo would take back, if it has one
+    pub(crate) fn undo_part(&self) -> Option<&P> {
+        self.undo.back().and_then(|(_, part)| part.as_ref())
+    }
+
+    /// The app's part of the step Redo would bring back, if it has one
+    pub(crate) fn redo_part(&self) -> Option<&P> {
+        self.redo.last().and_then(|(_, part)| part.as_ref())
+    }
+
     /// A step taken from `before`, with the app's `part` of it: what Redo
     /// would have brought back is gone
-    fn record(&mut self, before: S, part: Option<P>) {
+    pub(crate) fn record(&mut self, before: S, part: Option<P>) {
         self.drop_redo();
         self.bytes += before.bytes();
         self.undo.push_back((before, part));
@@ -178,7 +202,7 @@ impl<S: Kept, P: Clone> History<S, P> {
     }
 
     /// The state before the last step and its part, `now` kept for Redo
-    fn undo(&mut self, now: S) -> Option<(S, Option<P>)> {
+    pub(crate) fn undo(&mut self, now: S) -> Option<(S, Option<P>)> {
         let (before, part) = self.undo.pop_back()?;
         self.bytes = self.bytes + now.bytes() - before.bytes();
         self.redo.push((now, part.clone()));
@@ -187,7 +211,7 @@ impl<S: Kept, P: Clone> History<S, P> {
 
     /// The state after the step last undone and its part, `now` kept for
     /// Undo
-    fn redo(&mut self, now: S) -> Option<(S, Option<P>)> {
+    pub(crate) fn redo(&mut self, now: S) -> Option<(S, Option<P>)> {
         let (after, part) = self.redo.pop()?;
         self.bytes = self.bytes + now.bytes() - after.bytes();
         self.undo.push_back((now, part.clone()));
@@ -195,13 +219,13 @@ impl<S: Kept, P: Clone> History<S, P> {
     }
 
     /// What Redo would have brought back is gone, the steps before kept
-    fn drop_redo(&mut self) {
+    pub(crate) fn drop_redo(&mut self) {
         self.bytes -= self.redo.drain(..).map(|(s, _)| s.bytes()).sum::<usize>();
     }
 
     /// The history ends at the nearest step with a part either way: it,
     /// and all beyond it, gone
-    fn cut_at_parts(&mut self) {
+    pub(crate) fn cut_at_parts(&mut self) {
         if let Some(at) = self.undo.iter().rposition(|(_, part)| part.is_some()) {
             self.bytes -= self
                 .undo
@@ -222,7 +246,7 @@ impl<S: Kept, P: Clone> History<S, P> {
 /// The run of typing or deleting going on, which the next edit of the same
 /// kind joins as part of the same step
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Run {
+pub(crate) enum Run {
     /// Typing; whether the last character was a space or new line
     Typing {
         space: bool,
@@ -239,6 +263,44 @@ impl Run {
             (Run::Deleting, Run::Deleting) => true,
             _ => false,
         }
+    }
+
+    /// Whether an edit of the kind `next` (`None`: a paste, a cut, a word
+    /// deleted, anything else) is part of the step `going` on: typing over
+    /// a selection starts a step, which the typing after it joins
+    pub(crate) fn joins(going: Option<Run>, next: Option<Run>, selected: bool) -> bool {
+        !selected
+            && match (going, next) {
+                (Some(going), Some(next)) => going.joined_by(next),
+                _ => false,
+            }
+    }
+}
+
+/// A box with an undo history, as a menu's Undo and Redo show it
+/// ([`crate::TextMenuHistory::of`]): a [`TextBox`] or a
+/// [`ShortTextBox`](crate::ShortTextBox)
+pub trait Undoable {
+    /// The box's action, as its widget publishes it
+    type Action;
+    /// The action that undoes, and the one that redoes
+    const UNDO: Self::Action;
+    const REDO: Self::Action;
+    fn can_undo(&self) -> bool;
+    fn can_redo(&self) -> bool;
+}
+
+impl<P: Clone> Undoable for TextBox<P> {
+    type Action = Action;
+    const UNDO: Action = Action::Undo;
+    const REDO: Action = Action::Redo;
+
+    fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    fn can_redo(&self) -> bool {
+        self.history.can_redo()
     }
 }
 
@@ -351,12 +413,12 @@ impl<P: Clone> TextBox<P> {
 
     /// Whether Undo would change anything
     pub fn can_undo(&self) -> bool {
-        !self.history.undo.is_empty()
+        self.history.can_undo()
     }
 
     /// Whether Redo would change anything
     pub fn can_redo(&self) -> bool {
-        !self.history.redo.is_empty()
+        self.history.can_redo()
     }
 
     /// The text replaced by the app, the caret at `caret`: one step, which
@@ -380,12 +442,12 @@ impl<P: Clone> TextBox<P> {
 
     /// The app's part of the step Undo would take back, if it has one
     pub fn undo_part(&self) -> Option<&P> {
-        self.history.undo.back().and_then(|(_, part)| part.as_ref())
+        self.history.undo_part()
     }
 
     /// The app's part of the step Redo would bring back, if it has one
     pub fn redo_part(&self) -> Option<&P> {
-        self.history.redo.last().and_then(|(_, part)| part.as_ref())
+        self.history.redo_part()
     }
 
     /// The steps with an app's part can no longer be undone or redone (the
@@ -488,11 +550,7 @@ impl<P: Clone> TextBox<P> {
             // A paste, an indent
             _ => None,
         };
-        let joins = !selected
-            && match (self.run, run) {
-                (Some(going), Some(next)) => going.joined_by(next),
-                _ => false,
-            };
+        let joins = Run::joins(self.run, run, selected);
         let action = text_editor::Action::Edit(edit);
         let changed = if joins {
             self.content.perform(action);
@@ -732,7 +790,7 @@ pub fn standard_keys() -> Vec<(KeyBind, Action)> {
 }
 
 /// What a standard key does ([`standard_keys`]), if it is one
-fn standard_key(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<Action> {
+pub(crate) fn standard_key(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<Action> {
     standard_keys()
         .into_iter()
         .find(|(bind, _)| bind.matches(modifiers, key, Some(&physical)))
@@ -763,37 +821,132 @@ pub fn key_binding<M>(press: KeyPress, on_action: impl Fn(Action) -> M) -> Optio
     }
 }
 
+/// A text box's editor: libcosmic's `text_editor` over `text_box`, its
+/// actions to `on_action`, the standard keys ([`key_binding`]), and the
+/// colours of a selection kept while it is unfocused
+/// ([`kept_selection_colours`]); a focused box's selection stays
+/// libcosmic's, the solid accent and its on colour. An app with keys of its
+/// own sets its own `.key_binding(..)`, ending with [`key_binding`]. Put
+/// [`wrap`] round it (and round its text menu, if it has one).
+pub fn editor<'a, P: Clone, M: Clone + 'static>(
+    text_box: &'a TextBox<P>,
+    on_action: impl Fn(Action) -> M + Clone + 'a,
+) -> cosmic::widget::text_editor::TextEditor<'a, M> {
+    let keys = on_action.clone();
+    cosmic::widget::text_editor::text_editor(&text_box.content)
+        .on_action(move |action| on_action(action.into()))
+        .key_binding(move |press| key_binding(press, &keys))
+        .selection_fill(selection_fill)
+        .selected_text_color(selected_text)
+}
+
+/// The fill behind selected text: libcosmic's, or the kept look
+fn selection_fill(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
+    match crate::kept::drawing() {
+        Some(_) => kept_selection_colours(theme, style.value, beneath(theme, style)).0,
+        None => style.selection,
+    }
+}
+
+/// The colour of selected text: libcosmic's (its editor's own choice, the
+/// accent's on colour), or the kept look
+fn selected_text(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
+    match crate::kept::drawing() {
+        Some(_) => kept_selection_colours(theme, style.value, beneath(theme, style)).1,
+        None => theme.cosmic().accent.on.into(),
+    }
+}
+
+/// What a kept selection lies over: the editor's background
+fn beneath(theme: &cosmic::Theme, style: &text_editor::Style) -> Color {
+    crate::kept::flat(style.background, theme.cosmic().bg_color().into())
+}
+
+/// `content`, a text box's [`editor`] or what wraps it (its text menu), as
+/// a text box: Shift+click extends the selection (as [`shift_click`]), and
+/// the selection, kept while the box is unfocused, is drawn dimmed. Its
+/// actions go to `on_action`, as the editor's
+pub fn wrap<'a, P: Clone, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    text_box: &TextBox<P>,
+    on_action: impl Fn(Action) -> M,
+) -> Element<'a, M> {
+    Element::new(Frame {
+        content: content.into(),
+        extend: on_action(Action::Extend),
+        selected: text_box.content.cursor().selection.is_some(),
+    })
+}
+
 /// `content`, a text editor or what wraps one, with Shift+click: a left
 /// press with Shift held is the editor's own click, then `extend`, the
 /// box's [`Action::Extend`], so that the click extends the selection. Only
 /// a press the editor acted on is extended (one that can be changed, or
-/// selected in)
+/// selected in). [`wrap`] does this and draws a kept selection
 pub fn shift_click<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     extend: M,
 ) -> Element<'a, M> {
-    Element::new(ShiftClick {
+    Element::new(Frame {
         content: content.into(),
         extend,
+        selected: false,
     })
 }
 
-struct ShiftClick<'a, M> {
+/// What [`wrap`] and [`shift_click`] put round a text editor
+struct Frame<'a, M> {
     content: Element<'a, M>,
     extend: M,
+    /// Whether the box has a selection, which is kept while unfocused
+    selected: bool,
 }
 
-/// The modifiers held, as the window last said
-#[derive(Default)]
-struct Held(Modifiers);
+/// iced's editor state, as libcosmic's text editor holds it
+type EditorState = text_editor::State<cosmic::iced::advanced::text::highlighter::PlainText>;
 
-impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> {
+#[derive(Default)]
+struct FrameState {
+    /// The modifiers held, as the window last said
+    held: Modifiers,
+    /// The content's tree with its editor focused, while the box is
+    /// unfocused with a kept selection: what it is drawn from
+    kept: Option<Tree>,
+}
+
+impl<M> Frame<'_, M> {
+    /// The tree a kept selection is drawn from, made or let go as the box
+    /// is now
+    fn keep(&self, tree: &mut Tree) {
+        let unfocused = crate::kept::find::<EditorState>(&tree.children[0])
+            .is_some_and(|editor| !editor.is_focused());
+        let state = tree.state.downcast_mut::<FrameState>();
+        if !(self.selected && unfocused) {
+            state.kept = None;
+            return;
+        }
+        if state
+            .kept
+            .as_ref()
+            .is_some_and(|kept| kept.tag == tree.children[0].tag)
+        {
+            return;
+        }
+        let mut kept = Tree::new(self.content.as_widget());
+        if let Some(editor) = crate::kept::find_mut::<EditorState>(&mut kept) {
+            Focusable::focus(editor);
+        }
+        state.kept = Some(kept);
+    }
+}
+
+impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for Frame<'_, M> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Held>()
+        tree::Tag::of::<FrameState>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(Held::default())
+        tree::State::new(FrameState::default())
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -802,10 +955,20 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
 
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(std::slice::from_mut(&mut self.content));
+        if let Some(kept) = &mut tree.state.downcast_mut::<FrameState>().kept {
+            kept.diff(self.content.as_widget_mut());
+            if let Some(editor) = crate::kept::find_mut::<EditorState>(kept) {
+                Focusable::focus(editor);
+            }
+        }
     }
 
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
     }
 
     fn layout(
@@ -814,9 +977,12 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
         renderer: &cosmic::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.content
+        let node = self
+            .content
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+            .layout(&mut tree.children[0], renderer, limits);
+        self.keep(tree);
+        node
     }
 
     fn operate(
@@ -842,14 +1008,14 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
-        let held = tree.state.downcast_mut::<Held>();
+        let held = &mut tree.state.downcast_mut::<FrameState>().held;
         let extends = match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                held.0 = *modifiers;
+                *held = *modifiers;
                 false
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                held.0.shift() && cursor.is_over(layout.bounds())
+                held.shift() && cursor.is_over(layout.bounds())
             }
             _ => false,
         };
@@ -864,6 +1030,7 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
                 shell,
                 viewport,
             );
+            self.keep(tree);
             return;
         }
         // The editor's own click first, then Extend, if it acted on it
@@ -887,6 +1054,7 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
         if acted.get() {
             shell.publish(self.extend.clone());
         }
+        self.keep(tree);
     }
 
     fn draw(
@@ -899,15 +1067,17 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
+        let draw = |tree: &Tree, renderer: &mut cosmic::Renderer| {
+            self.content
+                .as_widget()
+                .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        };
+        match &tree.state.downcast_ref::<FrameState>().kept {
+            Some(kept) => crate::kept::drawn(cursor.is_over(layout.bounds()), || {
+                draw(kept, renderer);
+            }),
+            None => draw(&tree.children[0], renderer),
+        }
     }
 
     fn mouse_interaction(
@@ -957,6 +1127,18 @@ impl<M: Clone> Widget<M, cosmic::Theme, cosmic::Renderer> for ShiftClick<'_, M> 
             renderer,
             dnd_rectangles,
         );
+    }
+
+    #[cfg(feature = "a11y")]
+    fn a11y_nodes(
+        &self,
+        layout: Layout<'_>,
+        tree: &Tree,
+        cursor: mouse::Cursor,
+    ) -> iced_accessibility::A11yTree {
+        self.content
+            .as_widget()
+            .a11y_nodes(layout, &tree.children[0], cursor)
     }
 }
 
