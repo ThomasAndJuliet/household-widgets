@@ -73,7 +73,7 @@ fn width_fitting_wrap_is_rejected_when_its_total_height_does_not_fit() {
 fn hidden_child_costs_no_width_or_spacing_and_primary_remains() {
     let renderer = renderer();
     let fixed = |width| child(move |_| widget::Space::new().width(width).height(20.0).into());
-    let optional = fixed(30.0).hidden_when(|level| level >= Level::Strong);
+    let optional: Child<'_, u8> = fixed(30.0).hidden_when(|level| level >= Level::Strong);
     let primary = fixed(40.0);
     let row = row_child(vec![primary, optional, fixed(20.0)], 5.0);
     let shown = row
@@ -181,7 +181,7 @@ fn nested_groups_receive_the_exact_level_and_wrap_as_immediate_children() {
 #[test]
 fn scroll_viewport_must_fit_its_declared_outer_minimum_not_all_content() {
     let renderer = renderer();
-    let scroll = scroll_child(
+    let scroll: Child<'_, u8> = scroll_child(
         |_| {
             cosmic::iced::widget::scrollable(widget::Space::new().width(500.0).height(500.0)).into()
         },
@@ -214,7 +214,7 @@ fn column_remeasures_wrapping_text_at_its_allocated_width() {
         })
         .minimum_width(|_, _| 40.0)
     };
-    let column = column_child(vec![paragraph()], 0.0);
+    let column: Child<'_, u8> = column_child(vec![paragraph()], 0.0);
     let wide = column
         .query_at(Level::Preferred, &renderer, Size::new(400.0, 400.0))
         .unwrap();
@@ -248,7 +248,7 @@ fn each_stage_restarts_allocation_and_resize_restores_preferred_forms() {
             widget::Space::new().width(width).height(20.0).into()
         })
     };
-    let make_row = || row_child(vec![title(), menu()], 0.0);
+    let make_row = || -> Child<'static, u8> { row_child(vec![title(), menu()], 0.0) };
     let alternatives = vec![
         Stage::new(Level::Preferred, make_row()),
         Stage::new(Level::Mild, make_row()),
@@ -275,7 +275,7 @@ fn nested_scroll_viewport_respects_the_remaining_column_height() {
             Size::new(80.0, 40.0),
         )
     };
-    let column = column_child(vec![header(), viewport()], 5.0);
+    let column: Child<'_, u8> = column_child(vec![header(), viewport()], 5.0);
     assert!(
         column
             .query_at(Level::Preferred, &renderer, Size::new(100.0, 64.0))
@@ -302,7 +302,7 @@ fn nested_scroll_viewport_respects_the_remaining_column_height() {
 fn entirely_hidden_nested_group_does_not_leave_an_outer_gap() {
     let renderer = renderer();
     let fixed = |width| child(move |_| widget::Space::new().width(width).height(20.0).into());
-    let hidden = row_child(vec![fixed(30.0).hidden_when(|_| true)], 8.0);
+    let hidden: Child<'_, u8> = row_child(vec![fixed(30.0).hidden_when(|_| true)], 8.0);
     let row = row_child(vec![fixed(40.0), hidden, fixed(20.0)], 5.0);
     let plan = row
         .query_at(Level::Preferred, &renderer, Size::new(200.0, 40.0))

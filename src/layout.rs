@@ -216,13 +216,15 @@ struct Composition<'a, Message> {
     spacing: f32,
 }
 
+type Forms<'a, Message> = Rc<Vec<(Level, Child<'a, Message>)>>;
+
 /// A queryable leaf or composite. Only the root selects a level. Composites
 /// forward that exact level; outward weights never replace internal weights.
 pub struct Child<'a, Message> {
     view: Rc<dyn Fn(Level) -> Element<'a, Message> + 'a>,
     query: SizeQuery<'a>,
     composition: Option<Rc<Composition<'a, Message>>>,
-    forms: Option<Rc<Vec<(Level, Child<'a, Message>)>>>,
+    forms: Option<Forms<'a, Message>>,
     hidden: Rc<dyn Fn(Level) -> bool + 'a>,
     viewport: Option<Size>,
     weight: f32,
@@ -272,6 +274,15 @@ impl<'a, Message: 'a> Child<'a, Message> {
     }
 
     pub fn view(&self, level: Level) -> Element<'a, Message> {
+        if self.is_hidden(level) {
+            return widget::space().width(0).height(0).into();
+        }
+        // Preserve the native leaf's public tree identity for direct consumers
+        // such as tab strips. Root stage commits use render/VerifiedLeaf; only
+        // composites need this fixed-level allocation adapter here.
+        if self.composition.is_none() && self.forms.is_none() {
+            return (self.view)(level);
+        }
         Element::new(FixedComponent {
             child: self.clone(),
             level,
@@ -365,13 +376,13 @@ impl<'a, Message: 'a> Child<'a, Message> {
                     available: width,
                 });
             }
-            if let Some(offered_height) = viewport_height {
-                if size.height > offered_height + FIT_EPSILON {
-                    return Err(AllocationError::NoFit {
-                        required: size.height,
-                        available: offered_height,
-                    });
-                }
+            if let Some(offered_height) = viewport_height
+                && size.height > offered_height + FIT_EPSILON
+            {
+                return Err(AllocationError::NoFit {
+                    required: size.height,
+                    available: offered_height,
+                });
             }
             // The parent reserves the allocated width even for shrink content.
             let mut plan = GeometryPlan::leaf(Size::new(width, size.height));
@@ -444,8 +455,12 @@ impl<'a, Message: 'a> Child<'a, Message> {
                 .height(plan.size.height)
                 .into();
         };
+        // The plan has already omitted hidden forms. Native `with_children`
+        // filters zero-sized hints, which would discard valid zero-height
+        // horizontal spacers (or zero-width vertical slots). Preserve every
+        // explicitly allocated slot with `from_vec` instead.
         let make_row = |indices: &[usize]| -> Element<'a, Message> {
-            widget::row::with_children(
+            widget::Row::from_vec(
                 indices
                     .iter()
                     .map(|i| {
@@ -467,7 +482,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
         };
         let content = match composition.arrangement {
             Arrangement::Row => make_row(plan.rows.first().map_or(&[], Vec::as_slice)),
-            Arrangement::Wrap => widget::column::with_children(
+            Arrangement::Wrap => widget::Column::from_vec(
                 plan.rows
                     .iter()
                     .map(|row| make_row(row))
@@ -475,7 +490,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
             )
             .spacing(composition.spacing)
             .into(),
-            Arrangement::Column => widget::column::with_children(
+            Arrangement::Column => widget::Column::from_vec(
                 plan.children
                     .iter()
                     .map(|placed| {
