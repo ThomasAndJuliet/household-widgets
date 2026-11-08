@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The short text box: "Yes we should have a "short text box" widget and
+//! much of the code can be shared between the text box and short text box
+//! but there are also obviously different" (Juliet, 8 Nov), with "the usual
+//! functionality of such a box which includes ctrl + z" (6 Nov); and the
+//! selection either box keeps while unfocused, drawn dimmed.
+//!
+//! The box's steps are those of [`crate::TextBox`], so the cases here
+//! follow `text_box_tests.rs`'s; the widget is driven through a real
+//! `UserInterface`, and what is drawn is read from iced's headless renderer.
+
+use std::sync::Arc;
+
+use cosmic::cosmic_theme::{ThemeBuilder, palette::Srgb as Palette};
+use cosmic::iced::advanced::clipboard;
+use cosmic::iced::advanced::renderer::{Headless, Style};
+use cosmic::iced::event::Status;
+use cosmic::iced::keyboard::key::{Code, Physical};
+use cosmic::iced::keyboard::{self, Key, Location, Modifiers};
+use cosmic::iced::runtime::user_interface::{Cache, UserInterface};
+use cosmic::iced::{Color, Event, Font, Length, Pixels, Point, Size, mouse};
+use cosmic::widget::text_editor::{Cursor, Position};
+use cosmic::{Element, Theme, widget};
+use household_tones::{Srgb, tint};
+
+use crate::short_text_box::{self, Action, By, Edit, ShortTextBox, Span};
+use crate::text_box::{self, Caret, Turn};
+use crate::{TextBox, TextMenuHistory};
+
+fn span(anchor: usize, caret: usize) -> Span {
+    Span { anchor, caret }
+}
+
+/// `text` typed into `short` a character at a time at its caret, as the
+/// field reports each key
+fn typed<P: Clone>(short: &mut ShortTextBox<P>, text: &str) {
+    for c in text.chars() {
+        let at = short.span.caret;
+        let mut value: Vec<char> = short.value().chars().collect();
+        value.insert(at, c);
+        edited(
+            short,
+            &value.into_iter().collect::<String>(),
+            span(at, at),
+            span(at + 1, at + 1),
+            By::Typed(c),
+        );
+    }
+}
+
+/// An edit made `by` a key, from `before` to `after`, leaving `value`
+fn edited<P: Clone>(short: &mut ShortTextBox<P>, value: &str, before: Span, after: Span, by: By) {
+    short.perform(Action::Edit(Edit {
+        value: value.into(),
+        before,
+        after,
+        by,
+        remember: true,
+    }));
+}
+
+/// Undo pressed until nothing is left: the value after each
+fn undone<P: Clone>(short: &mut ShortTextBox<P>) -> Vec<String> {
+    let mut values = Vec::new();
+    while short.can_undo() {
+        short.perform(Action::Undo);
+        values.push(short.value().to_string());
+    }
+    values
+}
+
+#[test]
+fn a_run_of_typing_is_one_step_and_a_space_after_a_word_starts_the_next() {
+    let mut short: ShortTextBox = ShortTextBox::new();
+    assert!(!short.can_undo() && !short.can_redo());
+    typed(&mut short, "hello  world again");
+    assert_eq!(undone(&mut short), ["hello  world", "hello", ""]);
+    for want in ["hello", "hello  world", "hello  world again"] {
+        short.perform(Action::Redo);
+        assert_eq!(short.value(), want);
+    }
+    assert!(!short.can_redo());
+}
+
+#[test]
+fn moving_the_caret_or_changing_between_typing_and_deleting_ends_a_step() {
+    let mut short: ShortTextBox = ShortTextBox::new();
+    typed(&mut short, "abd");
+    // The caret moved left before the next key: its `before` is not where
+    // the last edit left it
+    edited(&mut short, "abcd", span(2, 2), span(3, 3), By::Typed('c'));
+    edited(&mut short, "abd", span(3, 3), span(2, 2), By::Deleted);
+    edited(&mut short, "ad", span(2, 2), span(1, 1), By::Deleted);
+    typed(&mut short, "xy");
+    assert_eq!(short.value(), "axyd");
+    assert_eq!(undone(&mut short), ["ad", "abcd", "abd", ""]);
+}
+
+#[test]
+fn a_paste_a_word_deleted_and_deleting_a_selection_are_a_step_each() {
+    let mut short: ShortTextBox = ShortTextBox::new();
+    typed(&mut short, "ab");
+    edited(&mut short, "abXY", span(2, 2), span(4, 4), By::Other);
+    typed(&mut short, "c");
+    edited(&mut short, "abX", span(5, 3), span(3, 3), By::Deleted);
+    edited(&mut short, "", span(3, 3), span(0, 0), By::Other);
+    assert_eq!(undone(&mut short), ["abX", "abXYc", "abXY", "ab", ""]);
+}
+
+#[test]
+fn typing_over_a_selection_is_one_step_with_the_typing_after_it() {
+    let mut short: ShortTextBox = ShortTextBox::starting_with("old");
+    edited(&mut short, "n", span(0, 3), span(1, 1), By::Typed('n'));
+    typed(&mut short, "ew");
+    assert_eq!(short.value(), "new");
+    assert_eq!(undone(&mut short), ["old"]);
+}
+
+#[test]
+fn a_key_that_changes_nothing_is_no_step_and_joins_none() {
+    let mut short: ShortTextBox = ShortTextBox::new();
+    edited(&mut short, "", span(0, 0), span(0, 0), By::Deleted);
+    assert!(!short.can_undo());
+    typed(&mut short, "a");
+    edited(&mut short, "a", span(0, 0), span(0, 0), By::Deleted);
+    edited(&mut short, "", span(0, 0), span(0, 0), By::Deleted);
+    assert_eq!(undone(&mut short), ["a", ""]);
+}
+
+#[test]
+fn the_apps_change_is_one_step_and_where_the_field_starts_is_none() {
+    let mut short: ShortTextBox = ShortTextBox::starting_with("draft");
+    assert!(!short.can_undo(), "a new box has nothing to undo");
+    // Clearing a search: one step Ctrl+Z takes back
+    short.replace("", Caret::End);
+    assert_eq!(short.value(), "");
+    assert_eq!(undone(&mut short), ["draft"]);
+    // The same value again is no step
+    short.replace("draft", Caret::End);
+    assert!(!short.can_undo());
+}
+
+#[test]
+fn undo_asks_the_field_to_put_back_the_caret_and_selection() {
+    let mut short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    edited(&mut short, "x", span(0, 11), span(1, 1), By::Typed('x'));
+    short.perform(Action::Undo);
+    assert_eq!(short.value(), "hello world");
+    let put = |short: &ShortTextBox| short.put.map(|(_, span)| span);
+    assert_eq!(
+        put(&short),
+        Some(span(0, 11)),
+        "the selection typed over is selected again"
+    );
+    short.perform(Action::Redo);
+    assert_eq!(put(&short), Some(span(1, 1)));
+}
+
+#[test]
+fn a_step_with_the_apps_part_hands_it_back() {
+    let mut short: ShortTextBox<&str> = ShortTextBox::new();
+    typed(&mut short, "query");
+    short.replace_with("", Caret::End, "saved search");
+    assert_eq!(short.undo_part(), Some(&"saved search"));
+    assert_eq!(
+        short.perform(Action::Undo),
+        Some(Turn::Undone("saved search"))
+    );
+    assert_eq!(short.value(), "query");
+    assert_eq!(
+        short.perform(Action::Redo),
+        Some(Turn::Redone("saved search"))
+    );
+    short.forget_parts();
+    assert!(!short.can_undo(), "the history ends at the part");
+}
+
+#[test]
+fn a_password_keeps_no_history() {
+    let mut short: ShortTextBox = ShortTextBox::password();
+    typed(&mut short, "hunter2");
+    short.replace("", Caret::End);
+    short.replace_with("swordfish", Caret::End, ());
+    assert_eq!(short.value(), "swordfish");
+    assert!(!short.can_undo() && !short.can_redo());
+    assert!(
+        !format!("{short:?}").contains("swordfish"),
+        "a password is not written out"
+    );
+    // And a secure field's edits are not kept, whatever the box
+    let mut plain: ShortTextBox = ShortTextBox::new();
+    plain.perform(Action::Edit(Edit {
+        value: "secret".into(),
+        before: span(0, 0),
+        after: span(6, 6),
+        by: By::Other,
+        remember: false,
+    }));
+    assert!(!plain.can_undo());
+}
+
+#[test]
+fn the_menu_offers_a_short_boxs_undo_and_redo() {
+    let mut short: ShortTextBox = ShortTextBox::new();
+    let history = TextMenuHistory::of(&short, |action| action);
+    assert!(!history.can_undo && !history.can_redo);
+    assert_eq!((history.undo, history.redo), (Action::Undo, Action::Redo));
+    typed(&mut short, "a");
+    assert!(TextMenuHistory::of(&short, |action| action).can_undo);
+}
+
+// ---------------------------------------------------------------------------
+// The widget
+// ---------------------------------------------------------------------------
+
+const WINDOW: Size = Size::new(320.0, 120.0);
+/// Inside the field, at the window's top, and below it
+const IN_FIELD: Point = Point::new(150.0, 16.0);
+const BELOW: Point = Point::new(150.0, 100.0);
+
+#[derive(Clone, Debug, PartialEq)]
+enum Message {
+    Box(Action),
+    Submit,
+}
+
+/// A window kept between builds, as the event loop keeps it
+struct Window {
+    renderer: cosmic::Renderer,
+    cache: Cache,
+}
+
+impl Window {
+    fn new() -> Self {
+        let renderer = cosmic::iced::futures::executor::block_on(
+            <cosmic::Renderer as Headless>::new(Font::default(), Pixels(14.0), Some("tiny-skia")),
+        )
+        .expect("a headless renderer");
+        Self {
+            renderer,
+            cache: Cache::default(),
+        }
+    }
+
+    /// `view` built, given each event with the pointer where it says; what
+    /// was published and whether each event was captured
+    fn send<'a, M: 'a>(
+        &mut self,
+        view: impl Into<Element<'a, M>>,
+        events: &[(Event, Point)],
+    ) -> (Vec<M>, Vec<Status>) {
+        let element = page(view.into());
+        let cache = std::mem::take(&mut self.cache);
+        let mut ui = UserInterface::build(element, WINDOW, cache, &mut self.renderer);
+        let mut messages = Vec::new();
+        let mut statuses = Vec::new();
+        for (event, at) in events {
+            let (_, status) = ui.update(
+                std::slice::from_ref(event),
+                mouse::Cursor::Available(*at),
+                &mut self.renderer,
+                &mut clipboard::Null,
+                &mut messages,
+            );
+            statuses.extend(status);
+        }
+        self.cache = ui.into_cache();
+        (messages, statuses)
+    }
+
+    /// `view` drawn in `theme`, the pointer away from it
+    fn shot<'a, M: 'a>(&mut self, view: impl Into<Element<'a, M>>, theme: &Theme) -> Shot {
+        let element = page(view.into());
+        let cache = std::mem::take(&mut self.cache);
+        let mut ui = UserInterface::build(element, WINDOW, cache, &mut self.renderer);
+        let style = Style {
+            text_color: theme.cosmic().on_bg_color().into(),
+            ..Style::default()
+        };
+        ui.draw(
+            &mut self.renderer,
+            theme,
+            &style,
+            mouse::Cursor::Available(BELOW),
+        );
+        self.cache = ui.into_cache();
+        Shot(self.renderer.screenshot(
+            cosmic::iced::Size::new(WINDOW.width as u32, WINDOW.height as u32),
+            1.0,
+            Color::BLACK,
+        ))
+    }
+}
+
+/// `content` at the top of a window with the theme's background
+fn page<'a, M: 'a>(content: Element<'a, M>) -> Element<'a, M> {
+    widget::container(widget::column::with_children(vec![content]))
+        .class(cosmic::theme::Container::Background)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+struct Shot(Vec<u8>);
+
+impl Shot {
+    fn at(&self, at: Point) -> [u8; 3] {
+        let i = (at.y as usize * WINDOW.width as usize + at.x as usize) * 4;
+        [self.0[i], self.0[i + 1], self.0[i + 2]]
+    }
+
+    /// How many pixels of the box's row (its top 32) are within 3 of `colour`
+    fn count(&self, colour: [u8; 3]) -> usize {
+        (0..32)
+            .flat_map(|y| (0..WINDOW.width as usize).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let pixel = self.at(Point::new(x as f32, y as f32));
+                (0..3).all(|i| pixel[i].abs_diff(colour[i]) <= 3)
+            })
+            .count()
+    }
+}
+
+fn click(at: Point) -> Vec<(Event, Point)> {
+    vec![
+        (Event::Mouse(mouse::Event::CursorMoved { position: at }), at),
+        (
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            at,
+        ),
+        (
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            at,
+        ),
+    ]
+}
+
+fn key(key: Key, code: Code, modifiers: Modifiers, text: Option<&str>) -> (Event, Point) {
+    (
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Code(code),
+            location: Location::Standard,
+            modifiers,
+            text: text.map(Into::into),
+            repeat: false,
+        }),
+        IN_FIELD,
+    )
+}
+
+/// A letter pressed: with Ctrl, a shortcut, with no text
+fn press(letter: &str, code: Code, modifiers: Modifiers) -> (Event, Point) {
+    let text = (!modifiers.control()).then_some(letter);
+    key(Key::Character(letter.into()), code, modifiers, text)
+}
+
+fn named(named: keyboard::key::Named, code: Code) -> (Event, Point) {
+    key(Key::Named(named), code, Modifiers::empty(), None)
+}
+
+fn modifiers(held: Modifiers) -> (Event, Point) {
+    (
+        Event::Keyboard(keyboard::Event::ModifiersChanged(held)),
+        IN_FIELD,
+    )
+}
+
+fn field(short: &ShortTextBox) -> short_text_box::Field<'_, Message> {
+    short_text_box::text(short, "", Message::Box).on_submit(Message::Submit)
+}
+
+/// The box's actions among `messages`, done to it; its edits
+fn apply(short: &mut ShortTextBox, messages: Vec<Message>) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    for message in messages {
+        if let Message::Box(action) = message {
+            if let Action::Edit(edit) = &action {
+                edits.push(edit.clone());
+            }
+            short.perform(action);
+        }
+    }
+    edits
+}
+
+#[test]
+fn ctrl_z_is_the_fields_only_while_it_is_focused() {
+    let mut window = Window::new();
+    let mut short: ShortTextBox = ShortTextBox::starting_with("hello");
+    let ctrl_z = press("z", Code::KeyZ, Modifiers::CTRL);
+    // Unfocused, the key goes on to the app (Marginalium's notes Undo)
+    let (messages, statuses) = window.send(field(&short), std::slice::from_ref(&ctrl_z));
+    assert!(messages.is_empty());
+    assert_eq!(statuses, [Status::Ignored]);
+    // Focused, it is the field's, and taken
+    let (messages, _) = window.send(field(&short), &click(IN_FIELD));
+    apply(&mut short, messages);
+    let (messages, _) = window.send(field(&short), &[press("s", Code::KeyS, Modifiers::empty())]);
+    apply(&mut short, messages);
+    assert_eq!(short.value(), "hellos");
+    for (keys, want) in [
+        (ctrl_z.clone(), Action::Undo),
+        (
+            press("z", Code::KeyZ, Modifiers::CTRL | Modifiers::SHIFT),
+            Action::Redo,
+        ),
+        (press("y", Code::KeyY, Modifiers::CTRL), Action::Redo),
+    ] {
+        let (messages, statuses) = window.send(field(&short), &[keys]);
+        assert_eq!(messages, [Message::Box(want)]);
+        assert_eq!(statuses, [Status::Captured]);
+    }
+}
+
+#[test]
+fn a_password_field_takes_ctrl_z_and_does_nothing() {
+    let mut window = Window::new();
+    let short: ShortTextBox = ShortTextBox::password();
+    let secure = |short| short_text_box::secure(short, "", Message::Box, true, None);
+    window.send(secure(&short), &click(IN_FIELD));
+    let (messages, statuses) =
+        window.send(secure(&short), &[press("z", Code::KeyZ, Modifiers::CTRL)]);
+    assert!(messages.is_empty(), "{messages:?}");
+    assert_eq!(statuses, [Status::Captured]);
+    let (messages, _) = window.send(
+        secure(&short),
+        &[press("a", Code::KeyA, Modifiers::empty())],
+    );
+    assert!(
+        matches!(&messages[..], [Message::Box(Action::Edit(edit))] if !edit.remember),
+        "what is typed is not to be kept: {messages:?}"
+    );
+}
+
+#[test]
+fn the_field_says_what_was_typed_and_where_and_enter_submits() {
+    let mut window = Window::new();
+    let mut short: ShortTextBox = ShortTextBox::new();
+    let (messages, _) = window.send(field(&short), &click(IN_FIELD));
+    apply(&mut short, messages);
+    let (messages, _) = window.send(field(&short), &[press("a", Code::KeyA, Modifiers::empty())]);
+    let edits = apply(&mut short, messages);
+    assert_eq!(
+        edits,
+        [Edit {
+            value: "a".into(),
+            before: span(0, 0),
+            after: span(1, 1),
+            by: By::Typed('a'),
+            remember: true,
+        }]
+    );
+    let (messages, _) = window.send(
+        field(&short),
+        &[named(keyboard::key::Named::Backspace, Code::Backspace)],
+    );
+    let edits = apply(&mut short, messages);
+    assert_eq!(
+        edits.iter().map(|edit| edit.by).collect::<Vec<_>>(),
+        [By::Deleted]
+    );
+    let (messages, _) = window.send(
+        field(&short),
+        &[named(keyboard::key::Named::Enter, Code::Enter)],
+    );
+    assert_eq!(messages, [Message::Submit]);
+    assert_eq!(short.value(), "", "no new line");
+}
+
+#[test]
+fn undo_puts_the_selection_back_in_the_field() {
+    let mut window = Window::new();
+    let mut short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    let (messages, _) = window.send(field(&short), &click(IN_FIELD));
+    apply(&mut short, messages);
+    let (messages, _) = window.send(field(&short), &[press("a", Code::KeyA, Modifiers::CTRL)]);
+    apply(&mut short, messages);
+    let (messages, _) = window.send(field(&short), &[press("x", Code::KeyX, Modifiers::empty())]);
+    apply(&mut short, messages);
+    assert_eq!(short.value(), "x");
+    short.perform(Action::Undo);
+    assert_eq!(short.value(), "hello world");
+    // The field, built again, has the selection back: what is typed next
+    // replaces it
+    let (messages, _) = window.send(field(&short), &[press("y", Code::KeyY, Modifiers::empty())]);
+    let edits = apply(&mut short, messages);
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!(edits[0].before, span(0, 11));
+    assert_eq!(short.value(), "y");
+}
+
+#[test]
+fn shift_click_extends_the_selection_from_where_it_was() {
+    let mut window = Window::new();
+    let mut short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    // The caret at the end, by a click past the text
+    let (messages, _) = window.send(field(&short), &click(Point::new(300.0, 16.0)));
+    apply(&mut short, messages);
+    let mut events = vec![modifiers(Modifiers::SHIFT)];
+    events.extend(click(Point::new(1.0, 16.0)));
+    events.push(modifiers(Modifiers::empty()));
+    let (messages, _) = window.send(field(&short), &events);
+    apply(&mut short, messages);
+    let (messages, _) = window.send(field(&short), &[press("x", Code::KeyX, Modifiers::empty())]);
+    let edits = apply(&mut short, messages);
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!(
+        edits[0].before,
+        span(11, 0),
+        "selected from the caret to the click"
+    );
+    assert_eq!(short.value(), "x");
+}
+
+// ---------------------------------------------------------------------------
+// A selection kept while unfocused, drawn dimmed
+// ---------------------------------------------------------------------------
+
+/// The light theme with the accent the household's references use
+fn theme() -> Theme {
+    let accent = Palette::new(f32::from(0x7f_u8) / 255.0, f32::from(0x24_u8) / 255.0, 0.0);
+    Theme::custom(Arc::new(ThemeBuilder::light().accent(accent).build()))
+}
+
+fn rgb8(c: Color) -> [u8; 3] {
+    let [r, g, b, _] = c.into_rgba8();
+    [r, g, b]
+}
+
+/// The accent, and the household's selection tint of it over `beneath`
+fn accent_and_tint(theme: &Theme, beneath: [u8; 3]) -> ([u8; 3], [u8; 3]) {
+    let accent = rgb8(theme.cosmic().accent_color().into());
+    let [r, g, b] = accent;
+    let [br, bg, bb] = beneath;
+    let tinted = tint(Srgb::from_rgb8(r, g, b), Srgb::from_rgb8(br, bg, bb));
+    (accent, tinted.to_rgb8())
+}
+
+/// A field with "hello world" all selected, drawn after `then`
+fn selected_field(then: &[(Event, Point)], theme: &Theme) -> Shot {
+    let mut window = Window::new();
+    let short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    window.send(field(&short), &click(IN_FIELD));
+    window.send(field(&short), &[press("a", Code::KeyA, Modifiers::CTRL)]);
+    window.send(field(&short), then);
+    window.shot(field(&short), theme)
+}
+
+#[test]
+fn a_fields_selection_kept_unfocused_is_drawn_in_the_tint() {
+    let theme = theme();
+    // Focused: the solid accent
+    let focused = selected_field(&[], &theme);
+    // Past the text, the field's own background
+    let beneath = focused.at(Point::new(300.0, 16.0));
+    let (accent, tinted) = accent_and_tint(&theme, beneath);
+    assert!(focused.count(accent) > 100, "a focused selection is solid");
+    assert!(focused.count(tinted) < 10);
+    // A press elsewhere (a menu opened) takes the focus, not the selection
+    let kept = selected_field(&click(BELOW), &theme);
+    assert!(
+        kept.count(tinted) > 100,
+        "the selection kept is drawn in the tint: {} pixels",
+        kept.count(tinted)
+    );
+    assert!(kept.count(accent) < 10, "and not as a focused one");
+    // Esc lets the selection go, as libcosmic does: nothing is drawn
+    let gone = selected_field(&[named(keyboard::key::Named::Escape, Code::Escape)], &theme);
+    assert!(gone.count(tinted) < 10 && gone.count(accent) < 10);
+}
+
+#[test]
+fn a_text_boxs_selection_kept_unfocused_is_drawn_in_the_tint() {
+    let theme = theme();
+    let selected: TextBox = TextBox::starting_with(
+        "hello world",
+        Caret::At(Cursor {
+            position: Position {
+                line: 0,
+                column: 11,
+            },
+            selection: Some(Position { line: 0, column: 0 }),
+        }),
+    );
+    fn view(text_box: &TextBox) -> Element<'_, text_box::Action> {
+        text_box::wrap(
+            text_box::editor(text_box, |action| action).height(32.0),
+            text_box,
+            |action| action,
+        )
+    }
+    // Unfocused, as it is while a menu has the keys
+    let mut window = Window::new();
+    let kept = window.shot(view(&selected), &theme);
+    let beneath = kept.at(Point::new(300.0, 16.0));
+    let (accent, tinted) = accent_and_tint(&theme, beneath);
+    assert!(
+        kept.count(tinted) > 100,
+        "the selection kept is drawn in the tint: {} pixels",
+        kept.count(tinted)
+    );
+    assert!(kept.count(accent) < 10);
+    // Focused (the click's own action not done, so the selection stays):
+    // the solid accent
+    let mut window = Window::new();
+    window.send(view(&selected), &click(IN_FIELD));
+    let focused = window.shot(view(&selected), &theme);
+    assert!(focused.count(accent) > 100, "a focused selection is solid");
+    assert!(focused.count(tinted) < 10);
+    // Without a selection, nothing
+    let none: TextBox = TextBox::starting_with("hello world", Caret::End);
+    let mut window = Window::new();
+    let plain = window.shot(view(&none), &theme);
+    assert!(plain.count(tinted) < 10 && plain.count(accent) < 10);
+}
