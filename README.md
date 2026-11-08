@@ -46,7 +46,11 @@ with other interface text at any size and font.
 
 `text_menu(target, &words, style)` wraps a native text input, editor or
 selectable text. Supply localized `TextMenuWords` and a `MenuStyle` for the
-native command rows; `.actions(menu)` adds resolved application actions. The
+native command rows; `.actions(menu)` adds resolved application actions, and
+`.history(TextMenuHistory::of(&text_box, on_action))` a text box's Undo · Redo
+after Select all, publishing the box's own messages. With text selected the
+menu starts with Copy (rule 28). `resolved_menu` gives the rows for a context,
+for an app's tests. The
 widget snapshots those messages when opened, preserves native editing and
 selection, and presents disabled explanations from native capabilities. Put
 caret or tooltip wrappers outside the resulting element. Enable this crate's
@@ -117,6 +121,24 @@ API; that upstream limitation also applies through this component.
 Native keyboard navigation remains delegated; revealing an offscreen focused
 tab before activation needs a native focus-bounds hook that libcosmic does not
 currently expose. Selecting it reveals it through the normal selection path.
+
+The text box: "You were asked to implement a input text box. This obviously includes the usual functionality of such a box which includes ctrl + z" (Juliet, 6 Nov 2026). iced's `text_editor` with what it lacks: an undo history, Ctrl+Backspace and Ctrl+Delete, and Shift+click; iced already has the rest of the standard keys. Module `text_box`; its documentation has the steps Ctrl+Z goes back by.
+
+| Call | Is |
+| --- | --- |
+| `TextBox::new()`, `TextBox::starting_with(text, caret)` | a box's text and caret with its undo history, nothing to undo yet; it derefs to iced's `Content`, so `text_editor(&text_box)`, `.text()`, `.selection()`. `caret` is a `text_box::Caret`: `Start`, `End`, or `At(cursor)` |
+| `text_box.perform(action)` | does a `text_box::Action`: iced's own (`text_editor::Action` converts into it), `Undo`, `Redo`, `DeleteWordBefore`, `DeleteWordAfter`, `Extend` |
+| `text_box.replace(text, caret)` | the app's change of the whole text: one step Ctrl+Z takes back |
+| `text_box.amend(text, caret)` | the same change again, part of the last step (the saves of a text open in another editor) |
+| `text_box.replace_with(text, caret, part)` | one step that is more than the text: `part`, the app's own side of it (a card stashed), comes back from `perform` as `Turn::Undone(part)` or `Turn::Redone(part)` for the app to undo or redo; `TextBox<P>` holds parts of type `P` |
+| `text_box.undo_part()`, `text_box.redo_part()`, `text_box.forget_parts()` | before Undo or Redo, the part it would hand back; if the app can no longer undo or redo such parts, the history ends at the nearest of them, the typing between kept |
+| `text_box.can_undo()`, `text_box.can_redo()` | for a menu's Undo and Redo |
+| `text_box::key_binding(press, on_action)` | the standard keys, for `.key_binding(..)`; an app with keys of its own handles them first and ends with this. Nothing while the box is unfocused, so the app keeps its own Ctrl+Z |
+| `text_box::standard_keys()` | the keys a text box adds to iced's and what each does, the one list: the key binding goes by it, and an app shows it in its shortcuts and menus |
+| `text_box::history_key(key, physical, modifiers)` | Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y alone, as an `Action`, for keys that reach a box other than as a focused widget |
+| `text_box::shift_click(editor, extend)` | round the editor: Shift+click extends the selection |
+
+A new draft is a new `TextBox` (the terminal's prompt, once sent). The history keeps 300 steps and at most 8 MB of text. One-line boxes (`text_input`) will get the same history over the value the app keeps, with a wrapper that takes the undo keys while the input is focused; a password box keeps none, as in GTK.
 
 ## Depending on it
 
