@@ -304,8 +304,8 @@ fn real_text_measurement_controls_exact_fit_and_growth_without_thresholds() {
         build(selected.clone()),
     );
     assert_eq!(selected.get(), Level::Preferred);
-    let (_, node) = rebuild(&mut tree, &renderer, 0.0, build(selected.clone()));
-    assert_eq!(selected.get(), Level::AllPermitted);
+    let (widget, node) = rebuild(&mut tree, &renderer, 0.0, build(selected.clone()));
+    assert!(widget.selection().expect("layout was attempted").is_err());
     assert!(node.size().width.is_finite() && node.size().height.is_finite());
 }
 

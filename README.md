@@ -63,42 +63,93 @@ caret or tooltip wrappers outside the resulting element. Enable this crate's
 wrapped target contributes its accessibility nodes. The app's libcosmic
 patch must also resolve `iced_accessibility` to the same fork revision.
 
-`layout::responsive(max_level, view)` measures native representations with the
-actual renderer and chooses the first permitted level that fits. The factory
-receives `layout::Level::{Preferred, Mild, Strong, AllPermitted}`. A parent can
-raise the permitted level through its own simple layout stages. The first native
-adapter handles one fixed arrangement with increasing levels; it does not try
-different arrangements or schedule individual children. `.width(..)` and
-`.height(..)` set its allocation; the defaults are fill width and shrink height.
-Factories must have no application side effects: measurements create and discard
-fresh elements and state trees, with the runtime's named states isolated.
+The shared layout engine separates component forms from the parent's stage
+order. `layout::Stage::new(level, content)` requests one exact level and one
+arrangement; `layout::stages(vec![...])` tries the stages in the supplied order.
+For example, a policy can try a preferred row, a mildly compact row, then a
+mildly compact column. Another can try the column before compaction. There is
+no individual descendant scheduler or enumeration of child combinations.
+Levels are `Preferred`, `Mild`, `Strong` and `AllPermitted`; the last respects
+component restrictions and does not grant permission to hide.
 
-The pure `layout::first_fitting(max_level, available_size, measure)` query returns
-`None` when no representation fits. The native adapter then gives the last
-permitted representation the available constraints; this fallback does not claim
-it fits. `layout::allocate_width(available, capacities)` shares a shortage at each
-child's original `weight * (preferred - minimum)` rate, clamps at minima, and
-redistributes using the remaining original rates. Higher weights shrink faster;
-zero protects preferred width. It leaves surplus unallocated and returns an
-explicit error if the lower bounds cannot fit.
+Build native leaves with `layout::child(view)`, and composites with
+`row_child(children, spacing)`, `column_child(children, spacing)` or
+`wrap_child(children, spacing)`. Wrapping keeps immediate children atomic.
+Every composite forwards the candidate level unchanged. `Child::view(level)`
+also renders at that exact level; only the responsible root chooses a stage.
+A component family can hide its implementation behind this same contract.
+`forms(vec![(Level::Preferred, expanded_child), (Level::Strong, menu_child)])`
+selects the family's own structured form: Mild inherits the expanded form,
+but its descendants still receive Mild. This preserves composite continuous
+ranges without requiring the parent to enumerate descendant alternatives.
 
-Selected controls use native tree reconciliation, retaining compatible focus
-and open inline dropdowns on resize. Replacing a row with a dropdown discards
-incompatible native state and its inline overlay; focus is not transferred
-between control types. External surface popups require their owner's lifecycle
-handling. Native dropdown accessibility and operation support remain limited by
-libcosmic; the adapter forwards the selected control's existing capabilities.
-Enable the shared `a11y` feature when the app enables libcosmic accessibility.
+`Child::query(level, renderer)` returns intrinsic preferred/minimum summaries.
+`query_at(level, renderer, available_size)` returns complete `GeometryPlan`
+geometry or an allocation error. Native content is remeasured at its allocated
+width with unbounded height, so wrapped text supplies its actual height and
+cannot certify a fit by being vertically clipped. `.minimum_width(...)`
+explicitly declares a useful width range; the default minimum is conservative
+intrinsic width. The view must actually support its declared range. A column
+measures children at their allocated widths before allocating vertical space;
+wrapping includes all row heights and spacing. Both dimensions must fit.
 
-For nested layouts, use `layout::child(view)` for native leaves and
-`layout::row_child(children, spacing)` for composites, then put one
-`layout::responsive_child(max_level, root)` at the root. A `Child` exposes
-`query(level, renderer)` returning preferred and minimum sizes, and `view(level)`
-for that exact level. Every nested row passes the parent's candidate level to
-its descendants; only the root chooses a level. Rows allocate their measured
-child boxes with the shared capacity allocator. `.weight(0.0)` protects a fixed
-control's preferred width. `.minimum_width(..)` is for views such as scrolling
-viewports that remain usable at their queried height when width shrinks.
+`layout::choose_stage(&stages, &renderer, available_size)` returns a
+`StagePlan` with stage index, level and recursive geometry, or `NoFit`.
+Geometry includes immediate-child indices, positions and allocated boxes;
+hidden children are omitted. Each stage starts from its own preferred sizes,
+so width released by menu compaction can restore a sibling title. The chosen
+plan is used to render, rather than recomputing row membership during commit.
+Native leaf dimensions are checked again during commit. If live widget state
+causes disagreement with the isolated query, the root reports no fit and drops
+the rejected event/overlay/accessibility tree.
+
+`ResponsiveLevels::selection()` exposes the last selection result. With no
+fit, the default native content is empty; `.fallback(|| element)` provides an
+explicit alternative while the result remains `Err`. This intentionally
+replaces the old implicit last-level/clipped fallback. The standalone
+`first_fitting(...)` query remains available. The compatibility conveniences
+`responsive(max_level, view)`, `responsive_child(max_level, root)` and
+`row(max_level, children, spacing)` all use the same staged engine with a
+successive-level policy. `.width(...)` and `.height(...)` set the root's
+allocation; defaults are fill width and shrink height.
+
+`allocate_width(available, capacities)` shares a shortage at each child's
+original `weight * (preferred - minimum)` rate, clamps at minima and
+redistributes using remaining original rates. Higher weights shrink faster;
+zero protects preferred size. It leaves surplus unallocated and returns an
+explicit error when lower bounds do not fit. Rows and columns reuse that
+allocator on their respective allocation axes. Internal child weights and the
+outward composite weight remain separate. `.grow(...)` shares width surplus;
+`.grow_height(...)` shares height surplus in a column. Growth is separate from
+shrink. `spacer(minimum)` supplies an elastic horizontal gap, and optional
+`.round_width_up()` rounds a child's width offers without changing native
+measurement or the continuous allocator.
+
+`.hidden_when(|level| ...)` is explicit component permission for a hidden
+form. It contributes no slot, spacing, event target, overlay or accessibility
+nodes. A composite whose descendants are all explicitly hidden also leaves
+no phantom outer gap. This is omission from the presentation, not a guarantee
+of retained widget-local focus/history; keep canonical state outside the form.
+`scroll_child(view, minimum_outer_size)` declares a native scrolling viewport.
+Its view implements scrolling and includes its controls/scrollbar lane; its
+minimum describes the whole useful viewport. The engine can allocate viewport
+width/height without fitting the full content extent. Scrolling is never an
+invented global fallback or an excuse to clip a non-scrollable child.
+
+Factories must have no application side effects: queries build disposable
+native elements and state trees with the runtime's named states isolated.
+Selected controls use ordinary tree reconciliation, retaining compatible focus
+and open inline dropdowns on resize. Replacing a control type discards
+incompatible native state; focus is not automatically transferred. External
+surface popups require their owner's lifecycle handling. Native accessibility
+capabilities are forwarded; enable this crate's `a11y` feature whenever the app
+enables libcosmic accessibility.
+
+Queries currently use exact native measurements, not persistent geometry
+caches or estimates. Cache invalidation, stale-plan protocols and automatic
+window-minimum updates are separate work. The engine does not solve arbitrary
+constraints or choose product policy: a declared stage deterministically
+allocates its ranges, measures the result and checks it.
 
 `tabs::Model::new(items, selected)` owns stable native tab entities and an ID.
 Each `tabs::Tab` supplies its label and icon. Keep the model's selection derived
