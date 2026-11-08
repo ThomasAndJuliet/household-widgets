@@ -37,19 +37,19 @@ household-tones = { git = "ssh://git@github.com/ThomasAndJuliet/household-kit.gi
 # one libcosmic in its lock. Move this pin when the apps move, so that CI
 # here builds against what they use.
 [patch."https://github.com/pop-os/libcosmic.git"]
-libcosmic = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-cosmic-config = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-cosmic-config-derive = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-cosmic-theme = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_core = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_debug = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_futures = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_graphics = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_program = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_renderer = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_runtime = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_tiny_skia = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_wgpu = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_widget = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
-iced_accessibility = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "dbbbcfa31dd80f3e4b23f2631ce1c9444bc3adbc" }
+libcosmic = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+cosmic-config = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+cosmic-config-derive = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+cosmic-theme = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_core = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_debug = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_futures = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_graphics = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_program = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_renderer = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_runtime = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_tiny_skia = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_wgpu = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_widget = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
+iced_accessibility = { git = "ssh://git@github.com/ThomasAndJuliet/libcosmic.git", rev = "cb889ef4bbfccd45739d5fa6f9140fd0e53df9fa" }
