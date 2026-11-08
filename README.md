@@ -90,7 +90,10 @@ width with unbounded height, so wrapped text supplies its actual height and
 cannot certify a fit by being vertically clipped. `.minimum_width(...)`
 explicitly declares a useful width range; a floor above an intrinsic Fill
 measurement raises preferred width too, rather than being silently lost.
-Allocated Fill content consumes its actual width, while intrinsic queries
+For a native leaf that reports infinite intrinsic width, a finite useful floor
+also supplies the initial probe width. This is a preferred offer, not a maximum:
+allocated Fill content can still grow. NaN and other invalid measurements remain
+errors. Allocated Fill content consumes its actual width, while intrinsic queries
 remain compressed. The view must actually support its declared range. A column
 measures children at their allocated widths before allocating vertical space;
 wrapping includes all row heights and spacing. Both dimensions must fit.
@@ -149,7 +152,9 @@ of retained widget-local focus/history; keep canonical state outside the form.
 `scroll_child(view, minimum_outer_size)` declares a native scrolling viewport.
 Its view implements scrolling and includes its controls/scrollbar lane; its
 minimum describes the whole useful viewport. The engine can allocate viewport
-width/height without fitting the full content extent. Scrolling is never an
+width/height without fitting the full content extent. If the native scrollable
+reports an infinite intrinsic dimension, the declared minimum viewport supplies
+that offer after a finite native probe verifies it. Scrolling is never an
 invented global fallback or an excuse to clip a non-scrollable child.
 
 Factories must have no application side effects: queries build disposable

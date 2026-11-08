@@ -606,20 +606,54 @@ impl<'a, Message: 'a> Child<'a, Message> {
 
     /// Declare a finite, nonnegative useful width floor. If native intrinsic
     /// width is smaller (including an all-Fill subtree reporting zero), the
-    /// preferred offer is raised to the floor. Native content is measured again
+    /// preferred offer is raised to the floor. A native leaf with positive
+    /// infinite intrinsic width is probed at this declared floor; only a finite
+    /// fitting native result can use the floor as its initial preferred offer.
+    /// Native content is measured again
     /// at its allocated width, including the actual height of wrapping text.
     /// The component is responsible for making that form usable.
     pub fn minimum_width(mut self, minimum: impl Fn(Level, Size) -> f32 + 'a) -> Self {
         let query = self.query.clone();
+        let native = if self.composition.is_none() && self.forms.is_none() {
+            Some(self.view.clone())
+        } else {
+            None
+        };
         self.query = Rc::new(move |level, renderer| {
             let mut measured = query(level, renderer);
-            if measured.preferred.width.is_finite() && measured.preferred.width >= 0.0 {
+            let recoverable = measured.preferred.width == f32::INFINITY
+                && measured.preferred.height.is_finite()
+                && measured.preferred.height >= 0.0
+                && measured.minimum.height.is_finite()
+                && measured.minimum.height >= 0.0
+                && native.is_some();
+            if (measured.preferred.width.is_finite() && measured.preferred.width >= 0.0)
+                || recoverable
+            {
                 let floor = minimum(level, measured.preferred);
                 if floor.is_finite() && floor >= 0.0 {
-                    // An all-Fill native subtree can have no intrinsic width.
-                    // Its explicit useful floor still applies to both offers.
-                    measured.minimum.width = floor;
-                    measured.preferred.width = measured.preferred.width.max(floor);
+                    if recoverable {
+                        // Some native Fill controls have no intrinsic width.
+                        // The component's declared floor is the finite offer;
+                        // never substitute an arbitrary window or probe width.
+                        let bounded = measure_element_in(
+                            || native.as_ref().expect("native leaf factory")(level),
+                            renderer,
+                            Size::new(floor, f32::INFINITY),
+                            true,
+                        );
+                        if finite_size(bounded) && bounded.width <= floor + FIT_EPSILON {
+                            measured.preferred = Size::new(floor, bounded.height);
+                            measured.minimum.width = floor;
+                            measured.minimum.height = measured.minimum.height.min(bounded.height);
+                        } else {
+                            measured.minimum.width = f32::NAN;
+                        }
+                    } else {
+                        // An all-Fill native subtree can report intrinsic zero.
+                        measured.minimum.width = floor;
+                        measured.preferred.width = measured.preferred.width.max(floor);
+                    }
                 } else {
                     measured.minimum.width = f32::NAN;
                 }
@@ -704,6 +738,8 @@ fn select_form<'a, 'forms, Message>(
 /// Declare a native scrolling viewport, including its scrollbar and any other
 /// controls in `view`. The declaration is local; no stage invents scrolling.
 /// `view` must actually implement scrolling at the offered viewport dimensions.
+/// If a Fill viewport has no finite intrinsic preferred dimension, its declared
+/// minimum supplies that initial offer after a bounded native probe succeeds.
 pub fn scroll_child<'a, Message: 'a>(
     view: impl Fn(Level) -> Element<'a, Message> + 'a,
     minimum: Size,
@@ -711,12 +747,41 @@ pub fn scroll_child<'a, Message: 'a>(
     assert!(finite_size(minimum));
     let mut child = child(view);
     let query = child.query.clone();
+    let native = child.view.clone();
     child.query = Rc::new(move |level, renderer| {
         let measured = query(level, renderer);
+        let invalid = |value: f32| value.is_nan() || value < 0.0;
+        if invalid(measured.preferred.width) || invalid(measured.preferred.height) {
+            return MeasuredSize {
+                preferred: measured.preferred,
+                minimum,
+            };
+        }
+        let mut preferred = measured.preferred;
+        if preferred.width.is_infinite() || preferred.height.is_infinite() {
+            // This component explicitly declares a scrolling viewport. Validate
+            // its whole native box, including controls, at that finite minimum.
+            let bounded = measure_element_in(|| native(level), renderer, minimum, false);
+            if !finite_size(bounded)
+                || bounded.width > minimum.width + FIT_EPSILON
+                || bounded.height > minimum.height + FIT_EPSILON
+            {
+                return MeasuredSize {
+                    preferred: Size::new(f32::NAN, f32::NAN),
+                    minimum,
+                };
+            }
+            if preferred.width.is_infinite() {
+                preferred.width = minimum.width;
+            }
+            if preferred.height.is_infinite() {
+                preferred.height = minimum.height;
+            }
+        }
         MeasuredSize {
             preferred: Size::new(
-                measured.preferred.width.max(minimum.width),
-                measured.preferred.height.max(minimum.height),
+                preferred.width.max(minimum.width),
+                preferred.height.max(minimum.height),
             ),
             minimum,
         }
@@ -1669,3 +1734,7 @@ mod engine_tests;
 #[cfg(test)]
 #[path = "layout_decorator_tests.rs"]
 mod decorator_tests;
+
+#[cfg(test)]
+#[path = "layout_input_tests.rs"]
+mod input_tests;
