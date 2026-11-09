@@ -378,6 +378,13 @@ where
         }
         if state.session.dismiss_on_event(event) {
             state.snapshot = None;
+            // A key that closed the menu (Esc) was the menu's, as in GTK: the
+            // text box does not see it too, which would let its selection go
+            // or run its own Esc
+            if matches!(event, Event::Keyboard(_)) {
+                shell.capture_event();
+                return;
+            }
         }
         self.content.update(
             &mut tree.children[0],

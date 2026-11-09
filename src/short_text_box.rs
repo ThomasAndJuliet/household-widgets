@@ -243,9 +243,21 @@ impl<P: Clone> ShortTextBox<P> {
     /// Does `action`, keeping the history. A step undone or redone that has
     /// the app's part hands it back, for the app to do its side
     pub fn perform(&mut self, action: Action) -> Option<Turn<P>> {
+        self.perform_part(action, None)
+    }
+
+    /// [`perform`](Self::perform), a step the field's edit starts carrying
+    /// `part`, the app's own side of it (rule 19b): a search field's typing
+    /// moves the reader off their match, which Undo brings back. An edit
+    /// joining the step going on leaves that step's part as it was
+    pub fn perform_with(&mut self, action: Action, part: P) -> Option<Turn<P>> {
+        self.perform_part(action, Some(part))
+    }
+
+    fn perform_part(&mut self, action: Action, part: Option<P>) -> Option<Turn<P>> {
         match action {
             Action::Edit(edit) => {
-                self.edit(edit);
+                self.edit(edit, part);
                 None
             }
             Action::Undo => self.turn(true),
@@ -254,7 +266,7 @@ impl<P: Clone> ShortTextBox<P> {
     }
 
     /// The field's edit: part of the run going on, or a step of its own
-    fn edit(&mut self, edit: Edit) {
+    fn edit(&mut self, edit: Edit, part: Option<P>) {
         let Edit {
             value,
             before,
@@ -283,7 +295,7 @@ impl<P: Clone> ShortTextBox<P> {
             let text = std::mem::take(&mut self.value);
             let bytes = text.len();
             self.history
-                .record(Line { text, span: before }, bytes, None);
+                .record(Line { text, span: before }, bytes, part);
         }
         self.value = value;
         self.span = after;

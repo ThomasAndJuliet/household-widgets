@@ -1114,3 +1114,82 @@ fn a_prominent_box_behind_fades_its_own_windows_accent() {
         "in front, its own accent"
     );
 }
+
+/// Every step a field's edit starts can carry the app's part (a search
+/// field's match), handed back by its Undo and Redo; typing that joins a
+/// step keeps the part the step began with
+#[test]
+fn a_fields_own_steps_carry_the_apps_part() {
+    let mut short: ShortTextBox<usize> = ShortTextBox::starting_with("rule");
+    // Select all and type over it, the reader at match 2: one step
+    short.perform_with(
+        Action::Edit(Edit {
+            value: "x".into(),
+            before: span(0, 4),
+            after: span(1, 1),
+            by: By::Typed { space: false },
+            hidden: false,
+        }),
+        2,
+    );
+    short.perform_with(
+        Action::Edit(Edit {
+            value: "xy".into(),
+            before: span(1, 1),
+            after: span(2, 2),
+            by: By::Typed { space: false },
+            hidden: false,
+        }),
+        0,
+    );
+    assert_eq!(short.undo_part(), Some(&2), "the part the step began with");
+    assert_eq!(short.perform(Action::Undo), Some(Turn::Undone(2)));
+    assert_eq!(short.value(), "rule");
+    assert_eq!(short.perform(Action::Redo), Some(Turn::Redone(2)));
+}
+
+/// Esc closing a field's menu is the menu's: the field keeps its selection,
+/// and a press elsewhere then keeps it too, drawn in the tint
+#[test]
+fn esc_closing_a_fields_menu_keeps_its_selection() {
+    let theme = theme();
+    let mut window = Window::new();
+    let short: ShortTextBox = ShortTextBox::starting_with("hello world");
+    fn view(short: &ShortTextBox) -> Element<'_, Message> {
+        crate::text_menu(
+            field(short),
+            &crate::text_menu::tests::words(),
+            crate::text_menu::tests::style(),
+        )
+        .history(TextMenuHistory::of(short, Message::Box))
+        .into()
+    }
+    window.send(view(&short), &click(IN_FIELD));
+    window.send(view(&short), &[press("a", Code::KeyA, Modifiers::CTRL)]);
+    window.send(
+        view(&short),
+        &[
+            (
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                IN_FIELD,
+            ),
+            (
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+                IN_FIELD,
+            ),
+        ],
+    );
+    let (_, statuses) = window.send(
+        view(&short),
+        &[named(keyboard::key::Named::Escape, Code::Escape)],
+    );
+    assert_eq!(statuses, [Status::Captured], "the menu's Esc");
+    window.send(view(&short), &click(Point::new(315.0, 115.0)));
+    let kept = window.shot(view(&short), &theme);
+    let (_, tinted) = accent_and_tint(&theme, kept.at(Point::new(300.0, 16.0)));
+    assert!(
+        kept.count(tinted) > 100,
+        "kept after Esc: {} pixels",
+        kept.count(tinted)
+    );
+}

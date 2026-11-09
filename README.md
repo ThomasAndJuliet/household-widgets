@@ -108,6 +108,7 @@ Whether a window is behind others is the app's to say, per box, as it builds tha
 | `short.perform(action)` | does a `short_text_box::Action`: the field's `Edit`, `Undo`, `Redo`; a step with the app's part hands it back as `Turn` |
 | `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret`, a `short_text_box::Caret` (`Start`, `End`, `At { anchor, caret }` in graphemes). The same value again by `replace` is nothing: no step, and the caret left where it is |
 | `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's (`Undoable`) |
+| `short.perform_with(action, part)` | `perform`, a step the field's edit starts carrying the app's `part` (a search field's match, which its Undo brings back) |
 | `short_text_box::text(&short, placeholder, on_action)` | the field, as libcosmic's `text_input` |
 | `short_text_box::search(&short, placeholder, on_action)` | as `search_input`; `.on_clear(message)` shows its clear button, and the app clears the box with `replace` |
 | `short_text_box::secure(&password, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, over a `PasswordBox`, with its show-or-hide button when `on_toggle` is given; the other kinds take only a `ShortTextBox`, so a password cannot be shown plain nor a plain box keep a password's history |
