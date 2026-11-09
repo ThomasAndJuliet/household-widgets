@@ -18,10 +18,10 @@
 
 #[macro_use]
 mod forward;
-pub mod layout;
 #[doc(hidden)]
 pub mod history;
 mod kept;
+pub mod layout;
 mod level;
 pub mod look;
 pub mod menu;
@@ -37,8 +37,8 @@ mod tooltip;
 
 pub use history::{Turn, Undoable};
 pub use level::{LEVEL_CAP, Level};
-pub use scroll::horizontal_scroll;
 pub use look::Look;
+pub use scroll::horizontal_scroll;
 pub use short_text_box::{PasswordBox, ShortTextBox};
 pub use switch::{SwitchItem, muted_colours, switch, switch_maybe, toggler};
 pub use text_box::TextBox;
