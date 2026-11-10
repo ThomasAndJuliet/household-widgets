@@ -320,6 +320,51 @@ fn a_sensitive_box_undoes_as_ever_and_writes_nothing_out() {
     assert_eq!(messages, [Message::Box(Action::Undo)]);
 }
 
+fn shown_password(password: &PasswordBox) -> short_text_box::Field<'_, Message> {
+    short_text_box::shown(password, "", Message::Box)
+}
+
+/// A password shown as a plain field is drawn as a text box is, the same
+/// size, and keeps a password's ways: Ctrl+Z taken and nothing undone,
+/// its edits not written out
+#[test]
+fn a_password_shown_plain_is_a_text_fields_size_and_a_passwords_box() {
+    let mut window = Window::new();
+    let mut password = PasswordBox::new();
+    password.set("generated-secret", Caret::End);
+    let plain: ShortTextBox = ShortTextBox::starting_with("generated-secret");
+    assert_eq!(
+        window.size_of(shown_password(&password)),
+        window.size_of(field(&plain)),
+        "the size a text box is"
+    );
+    let (messages, _) = window.send(shown_password(&password), &click(IN_FIELD));
+    for message in messages {
+        if let Message::Box(action) = message {
+            password.perform(action);
+        }
+    }
+    let (messages, _) = window.send(
+        shown_password(&password),
+        &[press("q", Code::KeyQ, Modifiers::empty())],
+    );
+    assert!(
+        !format!("{messages:?}").contains("generated-secret"),
+        "{messages:?}"
+    );
+    for message in messages {
+        if let Message::Box(action) = message {
+            password.perform(action);
+        }
+    }
+    let (messages, statuses) = window.send(
+        shown_password(&password),
+        &[press("z", Code::KeyZ, Modifiers::CTRL)],
+    );
+    assert!(messages.is_empty(), "no history to undo: {messages:?}");
+    assert_eq!(statuses, [Status::Captured]);
+}
+
 #[test]
 fn the_menu_offers_a_short_boxs_undo_and_redo() {
     let mut short: ShortTextBox = ShortTextBox::new();
@@ -404,6 +449,34 @@ impl Window {
         }
         self.cache = ui.into_cache();
         (messages, statuses)
+    }
+
+    /// The size `view`'s text field is laid out at
+    fn size_of<'a, M: 'a>(&mut self, view: impl Into<Element<'a, M>>) -> Size {
+        use cosmic::iced::advanced::widget::{Id, Operation, operation};
+        struct Find(Option<Size>);
+        impl Operation for Find {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text_input(
+                &mut self,
+                _: Option<&Id>,
+                bounds: cosmic::iced::Rectangle,
+                _: &mut dyn operation::TextInput,
+            ) {
+                self.0.get_or_insert(bounds.size());
+            }
+        }
+        let mut ui = UserInterface::build(
+            page(view.into()),
+            WINDOW,
+            Cache::default(),
+            &mut self.renderer,
+        );
+        let mut find = Find(None);
+        ui.operate(&self.renderer, &mut find);
+        find.0.expect("a text field")
     }
 
     /// `view` drawn in `theme`, the pointer away from it

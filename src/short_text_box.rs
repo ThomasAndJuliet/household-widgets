@@ -785,6 +785,26 @@ pub fn secure<'a, M: Clone + 'static>(
     )
 }
 
+/// A password's box shown as a plain one-line field, drawn as [`text`]
+/// draws one: a secret the person must see as it is typed, which is kept as
+/// a password is (no history, nothing of it written out, zeroized as it
+/// goes): a password generated for them, a page's prompt answered. To
+/// mask it, or show it on request, use [`secure`]
+pub fn shown<'a, M: Clone + 'static>(
+    text_box: &'a PasswordBox,
+    placeholder: impl Into<Cow<'a, str>>,
+    on_action: impl Fn(Action) -> M + 'a,
+) -> Field<'a, M> {
+    let input = text_input::text_input(placeholder, text_box.value.as_str());
+    Field::new(
+        input,
+        cosmic::theme::TextInput::Default,
+        false,
+        (text_box.put, true, true),
+        on_action,
+    )
+}
+
 impl<'a, M: Clone + 'static> Field<'a, M> {
     /// A field over libcosmic's `input` of the kind drawn in `base`; `put`,
     /// where its box asks for the caret, whether it is a password's, and
