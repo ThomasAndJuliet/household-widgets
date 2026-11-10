@@ -245,7 +245,7 @@ Whether a window is behind others is the app's to say, per box, as it builds tha
 | Call | Is |
 | --- | --- |
 | `ShortTextBox::new()`, `ShortTextBox::starting_with(text)` | a field's value with its undo history, nothing to undo yet; it derefs to the `str`, and `.value()`. A value that is where the field starts (a page number shown as the pages move) is a new box |
-| `PasswordBox::new()` | a password's value, with no history, as in GTK: `.perform(action)` (Undo and Redo do nothing), `.set(text, caret)`; it derefs to the `str` and writes nothing of it in `Debug` |
+| `PasswordBox::new()` | a password's value, with no history, as in GTK: `.perform(action)` (Undo and Redo do nothing), `.set(text, caret)`, `.take()` (the value handed over, the box empty again); it derefs to the `str` and writes nothing of it in `Debug`. Nothing of a password stays in memory it lets go of: each change zeroizes the value it replaces, in its own buffer, and dropping it zeroizes its value |
 | `short.perform(action)` | does a `short_text_box::Action`: the field's `Edit`, `Undo`, `Redo`; a step with the app's part hands it back as `Turn` |
 | `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret`, a `short_text_box::Caret` (`Start`, `End`, `At { anchor, caret }` in graphemes). The same value again by `replace` is nothing: no step, and the caret left where it is |
 | `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's (`Undoable`) |

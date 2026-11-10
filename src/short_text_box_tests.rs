@@ -225,6 +225,55 @@ fn a_password_keeps_no_history() {
     );
 }
 
+/// A change leaves nothing of the password it replaces in the box's
+/// buffer: the old value is zeroed where it was, the new one written over
+/// the start of it (what the allocator was given back, before the buffer
+/// grew, was zeroed too, but cannot be read once given back)
+#[test]
+fn a_passwords_change_leaves_nothing_of_the_old_one_in_its_buffer() {
+    let password_edit = |value: &str| {
+        Action::Edit(Edit {
+            value: value.into(),
+            before: span(0, 0),
+            after: span(value.len(), value.len()),
+            by: By::Typed { space: false },
+            hidden: true,
+        })
+    };
+    let mut password = PasswordBox::new();
+    password.perform(password_edit("correct horse battery staple"));
+    // (shorter: written in the same buffer, which every change zeroes
+    // first, so all of it can be read now)
+    password.perform(password_edit("tr0ub4dor"));
+    let buffer = password.buffer();
+    assert_eq!(&buffer[..9], b"tr0ub4dor");
+    assert!(
+        buffer[9..].iter().all(|byte| *byte == 0),
+        "the old password is left in the buffer: {buffer:?}"
+    );
+    // The app's change too
+    password.set("x", Caret::End);
+    let buffer = password.buffer();
+    assert_eq!(buffer[0], b'x');
+    assert!(buffer[1..].iter().all(|byte| *byte == 0));
+}
+
+/// take() hands the password over: the box is empty, still writes nothing
+/// out, and can be typed into again
+#[test]
+fn a_password_taken_leaves_its_box_empty() {
+    let mut password = PasswordBox::new();
+    password.set("swordfish", Caret::End);
+    assert_eq!(password.take(), "swordfish");
+    assert_eq!(password.value(), "");
+    assert_eq!(password.take(), "", "nothing is left to take");
+    password.set("hunter2", Caret::End);
+    assert_eq!(password.value(), "hunter2");
+    let written = format!("{password:?}");
+    assert!(!written.contains("hunter2"), "{written}");
+    assert!(written.contains("(hidden)"), "{written}");
+}
+
 #[test]
 fn the_menu_offers_a_short_boxs_undo_and_redo() {
     let mut short: ShortTextBox = ShortTextBox::new();

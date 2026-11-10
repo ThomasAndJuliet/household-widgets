@@ -64,6 +64,8 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use zeroize::Zeroize;
+
 use cosmic::iced::advanced::layout::{self, Layout};
 use cosmic::iced::advanced::renderer;
 use cosmic::iced::advanced::widget::{Id, Operation, Tree, Widget, tree};
@@ -372,7 +374,13 @@ fn request(span: Span) -> (u64, Span) {
 /// into it is kept for Undo, as in GTK, and nothing of it is written out by
 /// `Debug`. Only [`secure`] shows it, and `secure` shows nothing else, so
 /// a password cannot be shown in a plain field, nor a plain box keep a
-/// password's history
+/// password's history.
+///
+/// Nothing of a password stays behind in memory the box lets go of: each
+/// change zeroizes the value it replaces, in its own buffer, and the copy
+/// the change brought once it is taken in; dropping the box zeroizes its
+/// value; [`take`](Self::take) hands the value over and leaves the box
+/// empty
 #[derive(Default)]
 pub struct PasswordBox {
     value: String,
@@ -394,7 +402,7 @@ impl PasswordBox {
     /// nothing, there being no history
     pub fn perform(&mut self, action: Action) {
         match action {
-            Action::Edit(edit) => self.value = edit.value,
+            Action::Edit(edit) => replace_zeroized(&mut self.value, edit.value),
             Action::Undo | Action::Redo => {}
         }
     }
@@ -402,9 +410,43 @@ impl PasswordBox {
     /// The value set by the app (a password cleared once used), the caret
     /// at `caret`
     pub fn set(&mut self, text: &str, caret: Caret) {
-        self.value = text.to_string();
+        self.value.zeroize();
+        self.value.push_str(text);
         self.put = Some(request(span_for(text, caret)));
     }
+
+    /// The value, handed over (to what checks it): the box is empty again,
+    /// keeping nothing of it, and the field's caret goes to its start
+    pub fn take(&mut self) -> String {
+        self.put = Some(request(Span::at(0)));
+        std::mem::take(&mut self.value)
+    }
+
+    /// The whole of the value's buffer, its spare capacity too, for the
+    /// tests of what a change leaves in it; only once a change has
+    /// zeroized the buffer is all of it written
+    #[cfg(test)]
+    pub(crate) fn buffer(&self) -> &[u8] {
+        // SAFETY: the pointer and capacity are the String's own allocation;
+        // the tests call this only after a change zeroized the whole
+        // capacity (`replace_zeroized`, `set`), so every byte of it is written
+        unsafe { std::slice::from_raw_parts(self.value.as_ptr(), self.value.capacity()) }
+    }
+}
+
+impl Drop for PasswordBox {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+
+/// `slot` holds `new` in place of what it held: what it held is zeroized
+/// first, the whole of its buffer, so that growing it leaves zeros behind;
+/// then `new` is copied in and its own buffer zeroized
+fn replace_zeroized(slot: &mut String, mut new: String) {
+    slot.zeroize();
+    slot.push_str(&new);
+    new.zeroize();
 }
 
 impl Deref for PasswordBox {
