@@ -274,6 +274,52 @@ fn a_password_taken_leaves_its_box_empty() {
     assert!(written.contains("(hidden)"), "{written}");
 }
 
+/// A sensitive box undoes and redoes as any box does, and writes nothing
+/// of its value out: neither the box nor its field's edits
+#[test]
+fn a_sensitive_box_undoes_as_ever_and_writes_nothing_out() {
+    let mut plain: ShortTextBox = ShortTextBox::new();
+    let mut sensitive: ShortTextBox = ShortTextBox::sensitive();
+    assert!(sensitive.is_sensitive() && !plain.is_sensitive());
+    for short in [&mut plain, &mut sensitive] {
+        typed(short, "Synthetic Person");
+        short.replace("4/29", Caret::End);
+    }
+    assert_eq!(sensitive.value(), "4/29");
+    assert_eq!(
+        undone(&mut sensitive),
+        undone(&mut plain),
+        "the same steps back"
+    );
+    sensitive.perform(Action::Redo);
+    plain.perform(Action::Redo);
+    assert_eq!(sensitive.value(), plain.value(), "and the same forward");
+    assert!(!sensitive.value().is_empty());
+    let written = format!("{sensitive:?}");
+    assert!(
+        !written.contains("Synthetic") && written.contains("(hidden)"),
+        "{written}"
+    );
+    // Its field's edits are not written out either; a plain box's are
+    let mut window = Window::new();
+    let (messages, _) = window.send(field(&sensitive), &click(IN_FIELD));
+    apply(&mut sensitive, messages);
+    let (messages, _) = window.send(
+        field(&sensitive),
+        &[press("q", Code::KeyQ, Modifiers::empty())],
+    );
+    let written = format!("{messages:?}");
+    assert!(!written.contains("Synthetic"), "{written}");
+    let edits = apply(&mut sensitive, messages);
+    assert_eq!(edits.len(), 1, "the field still reports its edit");
+    // and Ctrl+Z is the field's, published for the box to undo
+    let (messages, _) = window.send(
+        field(&sensitive),
+        &[press("z", Code::KeyZ, Modifiers::CTRL)],
+    );
+    assert_eq!(messages, [Message::Box(Action::Undo)]);
+}
+
 #[test]
 fn the_menu_offers_a_short_boxs_undo_and_redo() {
     let mut short: ShortTextBox = ShortTextBox::new();
