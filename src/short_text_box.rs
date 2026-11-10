@@ -544,11 +544,14 @@ fn field_style(
     base: Rc<cosmic::theme::TextInput>,
     look: Look,
     editable: bool,
+    invalid: bool,
 ) -> cosmic::theme::TextInput {
     let style = move || base.clone();
     let (active, error, hovered, focused, disabled) = (style(), style(), style(), style(), style());
-    let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| {
-        field_look(theme, base, look, state, editable)
+    // (a field at fault: libcosmic's error look in every state, one border)
+    let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| match invalid {
+        true => theme.error(base),
+        false => field_look(theme, base, look, state, editable),
     };
     cosmic::theme::TextInput::Custom {
         active: Box::new(move |theme| looks(theme, &active, State::Rest)),
@@ -622,6 +625,12 @@ pub struct Field<'a, M> {
     editable: bool,
     /// What the input's overlays publish, made when they are asked for
     overlay_map: Option<Box<dyn Fn(Change<M>) -> M + 'a>>,
+    /// The characters it takes as they are typed, if not all
+    accepts: Option<fn(char) -> bool>,
+    /// Its kind of box and whether its window is behind others
+    look: Look,
+    /// Something is wrong with what it holds: libcosmic's error look
+    invalid: bool,
 }
 
 /// The app's messages for what a field's input says
@@ -822,7 +831,7 @@ impl<'a, M: Clone + 'static> Field<'a, M> {
             input: input
                 .on_input(Change::Input)
                 .on_paste(Change::Pasted)
-                .style(field_style(base.clone(), Look::normal(), editable)),
+                .style(field_style(base.clone(), Look::normal(), editable, false)),
             messages: Messages {
                 on_action: Rc::new(on_action),
                 on_paste: None,
@@ -833,18 +842,46 @@ impl<'a, M: Clone + 'static> Field<'a, M> {
             base,
             editable,
             overlay_map: None,
+            accepts: None,
+            look: Look::normal(),
+            invalid: false,
         }
+    }
+
+    /// Something is wrong with what it holds (a form's field at fault):
+    /// drawn in libcosmic's error look, its one border the error colour
+    /// and its fill libcosmic's, in every state, in place of the household
+    /// border (rule 25a: "error borders keep libcosmic's"). The app says
+    /// what is wrong where it says it, as libcosmic's own `error` would
+    /// write it under the field
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self.restyle()
+    }
+
+    /// The input's style, as the field's look and state are now
+    fn restyle(self) -> Self {
+        let style = field_style(self.base.clone(), self.look, self.editable, self.invalid);
+        self.with(|input| input.style(style))
+    }
+
+    /// Only the characters `accepts` takes are typed: a key or an input
+    /// method's text with another is not given to the input at all (a host
+    /// takes no space, a number no letter). The input edits a copy of its
+    /// value as each key comes, before the app answers, so a filter the app
+    /// applies afterwards is too late for the keys already come; this one is
+    /// before them, whatever their timing. What is pasted is the app's to
+    /// filter, as it is given whole
+    pub fn accepts(mut self, accepts: fn(char) -> bool) -> Self {
+        self.accepts = Some(accepts);
+        self
     }
 
     /// Whether the field's window is behind others: its focused border is
     /// then the rest colour (rule 25a, a normal text box)
-    pub fn behind(self, behind: bool) -> Self {
-        let style = field_style(
-            self.base.clone(),
-            Look::normal().behind(behind),
-            self.editable,
-        );
-        self.with(|input| input.style(style))
+    pub fn behind(mut self, behind: bool) -> Self {
+        self.look = Look::normal().behind(behind);
+        self.restyle()
     }
 
     /// libcosmic's input, changed by `change`
@@ -988,6 +1025,20 @@ fn span_in(cursor: cursor::Cursor, value: &Value) -> Span {
             anchor: start,
             caret: end,
         },
+    }
+}
+
+/// The text an event types: a key's with no Ctrl, Alt or Super held, or
+/// what an input method commits
+fn typed_text(event: &Event) -> Option<&str> {
+    match event {
+        Event::InputMethod(input_method::Event::Commit(text)) => Some(text),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            text: Some(text),
+            modifiers,
+            ..
+        }) if !(modifiers.control() || modifiers.alt() || modifiers.logo()) => Some(text),
+        _ => None,
     }
 }
 
@@ -1198,6 +1249,15 @@ impl<'a, M: Clone + 'static> Widget<M, Theme, Renderer> for Field<'a, M> {
                 };
                 shell.publish((self.messages.on_action)(action));
             }
+            shell.capture_event();
+            return;
+        }
+        // A character the field does not take, typed: not given to the input
+        if focused
+            && let Some(accepts) = self.accepts
+            && let Some(text) = typed_text(event)
+            && text.chars().any(|c| !c.is_control() && !accepts(c))
+        {
             shell.capture_event();
             return;
         }

@@ -365,6 +365,107 @@ fn a_password_shown_plain_is_a_text_fields_size_and_a_passwords_box() {
     assert_eq!(statuses, [Status::Captured]);
 }
 
+/// Keys as a window can give them, many at once before the app answers
+/// (typing fast, a VNC session): the input edits its own copy of the value
+/// with each, so a character the field does not take must be refused as it
+/// comes, not by the app afterwards
+#[test]
+fn a_field_refuses_what_it_does_not_take_however_fast_it_comes() {
+    fn pick(short: &ShortTextBox, accepting: bool) -> short_text_box::Field<'_, Message> {
+        match accepting {
+            true => field(short).accepts(|c| !c.is_whitespace()),
+            false => field(short),
+        }
+    }
+    let keys: Vec<(Event, Point)> = "alpha beta"
+        .chars()
+        .map(|c| {
+            let letter = c.to_string();
+            key(
+                Key::Character(letter.clone().into()),
+                Code::KeyA,
+                Modifiers::empty(),
+                Some(&letter),
+            )
+        })
+        .collect();
+    for (accepting, want) in [(true, "alphabeta"), (false, "alpha beta")] {
+        let mut window = Window::new();
+        let mut short: ShortTextBox = ShortTextBox::new();
+        let (messages, _) = window.send(pick(&short, accepting), &click(IN_FIELD));
+        apply(&mut short, messages);
+        // All ten keys at once, before the app has answered any
+        let (messages, statuses) = window.send(pick(&short, accepting), &keys);
+        apply(&mut short, messages);
+        assert_eq!(short.value(), want, "taking only some: {accepting}");
+        assert_eq!(statuses.len(), 10);
+    }
+}
+
+/// A field at fault is drawn in libcosmic's error look, in place of the
+/// household border: one border, libcosmic's error colour, its error fill,
+/// at rest and with the keys (rule 25a: "error borders keep libcosmic's")
+#[test]
+fn a_field_at_fault_has_libcosmics_error_look_and_one_border() {
+    let theme = theme();
+    let short: ShortTextBox = ShortTextBox::starting_with("one");
+    let error = rgb8(theme.cosmic().destructive_color().into());
+    let rest = rgb8(
+        Look::normal()
+            .border(&theme, crate::look::State::Rest)
+            .color,
+    );
+    let ring = rgb8(
+        Look::normal()
+            .border(&theme, crate::look::State::Focused)
+            .color,
+    );
+    let inside = Point::new(IN_FIELD.x + 60.0, IN_FIELD.y);
+    for focused in [false, true] {
+        let mut window = Window::new();
+        if focused {
+            let _ = window.send(field(&short).invalid(true), &click(IN_FIELD));
+        }
+        let shot = window.shot(field(&short).invalid(true), &theme);
+        // libcosmic's own input in its error state, for what its look is
+        let mut libcosmic = Window::new();
+        let input = || {
+            widget::text_input("", "one")
+                .on_input(|_| Message::Submit)
+                .error("")
+        };
+        if focused {
+            let _ = libcosmic.send(input(), &click(IN_FIELD));
+        }
+        let expected = libcosmic.shot(input(), &theme);
+        let all = 0..WINDOW.height as usize;
+        let border = shot.count_in(all.clone(), error);
+        assert!(
+            border > 20,
+            "the error colour's border ({focused}): {border}"
+        );
+        assert_eq!(
+            border,
+            expected.count_in(all.clone(), error),
+            "the one border libcosmic draws ({focused})"
+        );
+        // (no household border beside it: no more of its colours than
+        // libcosmic's own error input draws)
+        for (colour, what) in [(rest, "rest border"), (ring, "focus ring")] {
+            assert_eq!(
+                shot.count_in(all.clone(), colour),
+                expected.count_in(all.clone(), colour),
+                "no household {what} beside it ({focused})"
+            );
+        }
+        assert_eq!(
+            shot.at(inside),
+            expected.at(inside),
+            "libcosmic's error fill ({focused})"
+        );
+    }
+}
+
 #[test]
 fn the_menu_offers_a_short_boxs_undo_and_redo() {
     let mut short: ShortTextBox = ShortTextBox::new();
