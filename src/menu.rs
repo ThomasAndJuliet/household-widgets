@@ -166,7 +166,7 @@ impl<M> Menu<M> {
     }
 }
 
-fn ordered<M>(rows: &[Row<M>]) -> Vec<Option<usize>> {
+pub(crate) fn ordered<M>(rows: &[Row<M>]) -> Vec<Option<usize>> {
     let destructive = |r: &Row<M>| matches!(r, Row::Item(i) if i.destructive && i.mark.is_none());
     let rest = (0..rows.len()).filter(|&i| !destructive(&rows[i]));
     let last: Vec<_> = (0..rows.len()).filter(|&i| destructive(&rows[i])).collect();

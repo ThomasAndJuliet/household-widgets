@@ -18,13 +18,19 @@
 
 #[macro_use]
 mod forward;
+pub mod focus_regions;
 #[doc(hidden)]
 pub mod history;
+pub mod hover_card;
 mod kept;
 pub mod layout;
 mod level;
+pub mod list_navigation;
 pub mod look;
 pub mod menu;
+pub mod menu_parts;
+pub mod menu_surface;
+pub mod popup;
 mod scroll;
 pub mod short_text_box;
 mod switch;
@@ -47,8 +53,15 @@ pub use text_menu::{TextMenu, TextMenuHistory, TextMenuWords, text_menu};
 pub use tooltip::{TIP_WIDTH, link_tooltip, tip_bubble, tip_padding, tooltip_unless, tooltip_with};
 
 #[cfg(test)]
+mod menu_fixture_tests;
+#[cfg(test)]
+mod menu_parts_tests;
+#[cfg(test)]
 mod short_text_box_tests;
 #[cfg(test)]
 mod switch_tests;
 #[cfg(test)]
 mod text_box_tests;
+
+/// The common menu and hover-card surface.
+pub mod popup_surface;

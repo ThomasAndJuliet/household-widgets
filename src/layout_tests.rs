@@ -489,3 +489,44 @@ fn optional_whole_pixel_offers_keep_fractional_content_from_shifting_neighbors()
     assert_eq!(boxes[1].bounds().x, 70.0);
     assert_eq!(boxes[2].bounds().x, 89.0);
 }
+
+#[test]
+fn preferred_width_keeps_the_useful_minimum_and_negotiates_allocation() {
+    let renderer = renderer();
+    let make = || {
+        child::<()>(|_| widget::space().width(Length::Fill).height(20).into())
+            .minimum_width(|_, _| 80.0)
+    };
+    let family = make().preferred_width(240.0);
+    let measured = family.query(Level::Preferred, &renderer);
+    assert_eq!(
+        (measured.preferred.width, measured.minimum.width),
+        (240.0, 80.0)
+    );
+    let narrowed = family
+        .query_at(Level::Preferred, &renderer, Size::new(180.0, 100.0))
+        .unwrap();
+    assert_eq!(narrowed.size.width, 180.0);
+    assert!(
+        family
+            .query_at(Level::Preferred, &renderer, Size::new(79.0, 100.0))
+            .is_err()
+    );
+    let instance = family.clone().preferred_width(160.0);
+    let measured = instance.query(Level::Preferred, &renderer);
+    assert_eq!(
+        (measured.preferred.width, measured.minimum.width),
+        (160.0, 80.0)
+    );
+    let wider_minimum = make().minimum_width(|_, _| 260.0).preferred_width(240.0);
+    let measured = wider_minimum.query(Level::Preferred, &renderer);
+    assert_eq!(
+        (measured.preferred.width, measured.minimum.width),
+        (260.0, 260.0)
+    );
+    assert!(
+        wider_minimum
+            .query_at(Level::Preferred, &renderer, Size::new(240.0, 100.0))
+            .is_err()
+    );
+}

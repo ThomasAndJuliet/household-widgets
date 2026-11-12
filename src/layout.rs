@@ -15,6 +15,40 @@ use cosmic::iced::{Event, Length, Rectangle, Size, Vector};
 use cosmic::{Element, Renderer, Theme, widget};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+
+#[path = "layout_frame.rs"]
+mod frame;
+#[path = "layout_information.rs"]
+mod information;
+use frame::Frame;
+pub use frame::framed_child;
+#[path = "layout_presentation.rs"]
+mod presentation;
+pub use information::{
+    AcceptedSourceReport, InformationId, InformationLoss, LossKind, SourceId, SourceReport,
+    SourceReports,
+};
+use information::{SourceInformation, VerifiedBox};
+pub use presentation::{
+    Detail, Emphasis, Presentation, PresentationFamily, PresentationRequest,
+    UnsupportedPresentation,
+};
+
+#[path = "layout_popup.rs"]
+mod attached;
+#[path = "layout_hover.rs"]
+mod hover;
+pub use attached::{
+    Alignment, AnchorCandidate, AttachedPlan, Attachment, PlacementPreference, Side,
+    choose_attached, commit_attached,
+};
+pub(crate) use attached::{
+    ChainCard, ChainFailure, RetainedGeometry, choose_attached_avoiding, choose_attached_chain,
+    commit_attached_retaining, commit_attached_retaining_avoiding,
+};
+pub use hover::choose_hover;
+pub(crate) use hover::{HoverRetained, commit_hover_retaining};
 
 /// The maximum compromise a parent permits its content to make.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -172,7 +206,7 @@ pub enum Arrangement {
 }
 
 /// Geometry proposed by a pure query. No widget state is retained here.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct GeometryPlan {
     pub size: Size,
     pub hidden: bool,
@@ -181,6 +215,39 @@ pub struct GeometryPlan {
     rows: Vec<Vec<usize>>,
     minimum_height: f32,
     native_size: Option<Size>,
+    bindings: Vec<(PreparedId, Level)>,
+    source_reports: Vec<SourceReport>,
+}
+
+// Geometric equality is useful when checking decorators and pure re-queries.
+// Preparation bindings certify a commit, rather than changing its geometry.
+impl PartialEq for GeometryPlan {
+    fn eq(&self, other: &Self) -> bool {
+        self.size == other.size
+            && self.hidden == other.hidden
+            && self.children == other.children
+            && self.rows == other.rows
+            && self.minimum_height == other.minimum_height
+            && self.native_size == other.native_size
+            && self.source_reports == other.source_reports
+    }
+}
+
+// Keep the allocation alive in every plan, so pointer identity cannot be reused
+// while an old plan still exists. Clones of an immutable preparation share it.
+#[derive(Clone, Debug)]
+struct PreparedId(Arc<()>);
+
+impl PreparedId {
+    fn new() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl PartialEq for PreparedId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -200,6 +267,8 @@ impl GeometryPlan {
             rows: Vec::new(),
             minimum_height: size.height,
             native_size: None,
+            bindings: Vec::new(),
+            source_reports: Vec::new(),
         }
     }
     fn hidden() -> Self {
@@ -207,6 +276,27 @@ impl GeometryPlan {
             hidden: true,
             ..Self::leaf(Size::ZERO)
         }
+    }
+
+    /// Trial facts about this plan and its immediate-child subplans. These are
+    /// never active-source notifications; accepted native traversal publishes
+    /// the current facts through `AcceptedSourceReport` instead.
+    pub fn reports(&self) -> Vec<&SourceReport> {
+        let mut reports: Vec<_> = self.source_reports.iter().collect();
+        for child in &self.children {
+            reports.extend(child.geometry.reports());
+        }
+        reports
+    }
+
+    pub(crate) fn same_preparation(&self, other: &Self) -> bool {
+        self.bindings == other.bindings
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&other.children)
+                .all(|(a, b)| a.index == b.index && a.geometry.same_preparation(&b.geometry))
     }
 }
 
@@ -218,6 +308,7 @@ struct Composition<'a, Message> {
 
 type Forms<'a, Message> = Rc<Vec<(Level, Child<'a, Message>)>>;
 type ViewMap<'a, Message> = Rc<dyn Fn(Element<'a, Message>) -> Element<'a, Message> + 'a>;
+type MinimumQuery<'a> = Rc<dyn Fn(Level, &Renderer) -> Size + 'a>;
 
 /// A queryable leaf or composite. Only the root selects a level. Composites
 /// forward that exact level; outward weights never replace internal weights.
@@ -225,13 +316,17 @@ pub struct Child<'a, Message> {
     view: Rc<dyn Fn(Level) -> Element<'a, Message> + 'a>,
     query: SizeQuery<'a>,
     composition: Option<Rc<Composition<'a, Message>>>,
+    frame: Option<Rc<Frame<'a, Message>>>,
     forms: Option<Forms<'a, Message>>,
     decorator: Option<ViewMap<'a, Message>>,
     hidden: Rc<dyn Fn(Level) -> bool + 'a>,
-    viewport: Option<Size>,
+    viewport: Option<MinimumQuery<'a>>,
     weight: f32,
     grow: f32,
     grow_height: f32,
+    preparation: PreparedId,
+    presentation: Option<Presentation>,
+    information: Option<SourceInformation<'a>>,
 }
 
 impl<Message> Clone for Child<'_, Message> {
@@ -240,24 +335,80 @@ impl<Message> Clone for Child<'_, Message> {
             view: self.view.clone(),
             query: self.query.clone(),
             composition: self.composition.clone(),
+            frame: self.frame.clone(),
             forms: self.forms.clone(),
             decorator: self.decorator.clone(),
             hidden: self.hidden.clone(),
-            viewport: self.viewport,
+            viewport: self.viewport.clone(),
             weight: self.weight,
             grow: self.grow,
             grow_height: self.grow_height,
+            preparation: self.preparation.clone(),
+            presentation: self.presentation,
+            information: self.information.clone(),
         }
     }
 }
 
 impl<'a, Message: 'a> Child<'a, Message> {
+    fn refresh_preparation(&mut self) {
+        self.preparation = PreparedId::new();
+    }
+
+    pub fn presentation(&self) -> Option<Presentation> {
+        self.presentation
+    }
+
+    /// Report family-local information loss from prepared immutable data and
+    /// this exact candidate geometry. This pure callback runs for trial queries
+    /// too: it must not update a hover, registry, application state or perform
+    /// work such as parsing, I/O or generation. Rebuild the Child on a content
+    /// revision or presentation/dependency change; retain a clone only while
+    /// its prepared snapshot is unchanged.
+    pub fn report_information(
+        mut self,
+        source: SourceId,
+        revision: u64,
+        report: impl Fn(Level, &GeometryPlan) -> Vec<InformationLoss> + 'a,
+    ) -> Self {
+        self.information = Some(SourceInformation {
+            source,
+            revision,
+            report: Rc::new(report),
+        });
+        self.refresh_preparation();
+        self
+    }
+
+    fn bind_geometry(&self, level: Level, mut plan: GeometryPlan) -> GeometryPlan {
+        plan.bindings.push((self.preparation.clone(), level));
+        if !plan.hidden
+            && let Some(information) = &self.information
+        {
+            let losses = (information.report)(level, &plan);
+            plan.source_reports.push(SourceReport {
+                source: information.source,
+                revision: information.revision,
+                presentation: self.presentation,
+                level,
+                size: plan.size,
+                losses,
+                owner: self.preparation.clone(),
+            });
+        }
+        plan
+    }
+
     fn selected_form(&self, level: Level) -> Option<&Self> {
         self.forms.as_ref().map(|forms| select_form(forms, level))
     }
 
     fn has_composition(&self, level: Level) -> bool {
         self.composition.is_some()
+            || self
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.content.has_composition(level))
             || self
                 .selected_form(level)
                 .is_some_and(|form| form.has_composition(level))
@@ -274,6 +425,10 @@ impl<'a, Message: 'a> Child<'a, Message> {
                     .iter()
                     .all(|child| child.is_hidden(level))
             })
+            || self
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.content.is_hidden(level))
     }
 
     pub fn view(&self, level: Level) -> Element<'a, Message> {
@@ -284,7 +439,13 @@ impl<'a, Message: 'a> Child<'a, Message> {
         // such as tab strips. Root stage commits use render/VerifiedLeaf; only
         // composites and explicitly decorated leaves need this fixed-level
         // allocation adapter here.
-        if self.composition.is_none() && self.forms.is_none() && self.decorator.is_none() {
+        if self.composition.is_none()
+            && self.frame.is_none()
+            && self.forms.is_none()
+            && self.decorator.is_none()
+            && self.presentation.is_none()
+            && self.information.is_none()
+        {
             return (self.view)(level);
         }
         Element::new(FixedComponent {
@@ -317,7 +478,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
             return Err(AllocationError::InvalidInput);
         }
         if self.is_hidden(level) {
-            return Ok(GeometryPlan::hidden());
+            return Ok(self.bind_geometry(level, GeometryPlan::hidden()));
         }
         let measured = self.query(level, renderer);
         validate_measurement(measured)?;
@@ -346,7 +507,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
         height: f32,
     ) -> Result<GeometryPlan, AllocationError> {
         if self.is_hidden(level) {
-            return Ok(GeometryPlan::hidden());
+            return Ok(self.bind_geometry(level, GeometryPlan::hidden()));
         }
         let mut plan = if let Some(form) = self.selected_form(level) {
             let mut selected = form.clone();
@@ -356,8 +517,11 @@ impl<'a, Message: 'a> Child<'a, Message> {
             selected.plan_width(level, renderer, width, height)?
         } else if let Some(composition) = &self.composition {
             composition.plan(level, renderer, width, height)?
+        } else if let Some(frame) = &self.frame {
+            frame.plan(level, renderer, width, height, self.grow_height)?
         } else {
-            let viewport_height = self.viewport.map(|minimum| {
+            let viewport_height = self.viewport.as_ref().map(|minimum| {
+                let minimum = minimum(level, renderer);
                 let measured = self.query(level, renderer);
                 if self.grow_height > 0.0 && height.is_finite() {
                     height.max(minimum.height)
@@ -391,7 +555,8 @@ impl<'a, Message: 'a> Child<'a, Message> {
             // The parent reserves the allocated width even for shrink content.
             let mut plan = GeometryPlan::leaf(Size::new(width, size.height));
             plan.native_size = Some(size);
-            if let Some(minimum) = self.viewport {
+            if let Some(minimum) = &self.viewport {
+                let minimum = minimum(level, renderer);
                 plan.size.height = viewport_height.expect("declared viewport height");
                 plan.minimum_height = minimum.height;
             }
@@ -412,7 +577,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
                 available: height,
             });
         }
-        Ok(plan)
+        Ok(self.bind_geometry(level, plan))
     }
 
     fn render(
@@ -421,11 +586,17 @@ impl<'a, Message: 'a> Child<'a, Message> {
         plan: &GeometryPlan,
         agreement: Rc<Cell<bool>>,
     ) -> Element<'a, Message> {
-        if plan.hidden {
-            return widget::space().width(0).height(0).into();
-        }
-        let content = self.render_content(level, plan, agreement.clone());
-        match &self.decorator {
+        let binding_matches = plan
+            .bindings
+            .iter()
+            .any(|(id, planned_level)| id == &self.preparation && *planned_level == level);
+        let content = if !binding_matches || plan.hidden {
+            widget::space().width(0).height(0).into()
+        } else {
+            self.render_content(level, plan, agreement.clone())
+        };
+        let content = match &self.decorator {
+            Some(_) if !binding_matches || plan.hidden => content,
             Some(decorate) => {
                 let content = Element::new(VerifiedDecoration {
                     content,
@@ -436,12 +607,26 @@ impl<'a, Message: 'a> Child<'a, Message> {
                 Element::new(VerifiedDecoration {
                     content: decorate(content),
                     expected: plan.size,
-                    agreement,
+                    agreement: agreement.clone(),
                     check_constraints: false,
                 })
             }
             None => content,
-        }
+        };
+        Element::new(VerifiedBox {
+            content,
+            reports: if binding_matches && !plan.hidden {
+                plan.source_reports
+                    .iter()
+                    .filter(|report| report.owner == self.preparation)
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            binding_matches,
+            agreement,
+        })
     }
 
     fn render_content(
@@ -464,6 +649,9 @@ impl<'a, Message: 'a> Child<'a, Message> {
             } else {
                 content
             };
+        }
+        if let Some(frame) = &self.frame {
+            return frame.render(level, plan, agreement, self.grow_height);
         }
         let Some(composition) = &self.composition else {
             let content = Element::new(VerifiedLeaf {
@@ -562,12 +750,14 @@ impl<'a, Message: 'a> Child<'a, Message> {
             Some(previous) => Rc::new(move |content| decorate(previous(content))),
             None => Rc::new(decorate),
         });
+        self.refresh_preparation();
         self
     }
 
     pub fn weight(mut self, weight: f32) -> Self {
         assert!(weight.is_finite() && weight >= 0.0);
         self.weight = weight;
+        self.refresh_preparation();
         self
     }
 
@@ -575,6 +765,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
     pub fn grow(mut self, grow: f32) -> Self {
         assert!(grow.is_finite() && grow >= 0.0);
         self.grow = grow;
+        self.refresh_preparation();
         self
     }
 
@@ -583,6 +774,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
     pub fn grow_height(mut self, grow: f32) -> Self {
         assert!(grow.is_finite() && grow >= 0.0);
         self.grow_height = grow;
+        self.refresh_preparation();
         self
     }
 
@@ -590,15 +782,46 @@ impl<'a, Message: 'a> Child<'a, Message> {
     /// event target, overlay or accessibility node is built for hidden children.
     pub fn hidden_when(mut self, hidden: impl Fn(Level) -> bool + 'a) -> Self {
         self.hidden = Rc::new(hidden);
+        self.refresh_preparation();
         self
     }
 
     pub fn round_width_up(mut self) -> Self {
+        self.refresh_preparation();
         let query = self.query.clone();
         self.query = Rc::new(move |level, renderer| {
             let mut measured = query(level, renderer);
             measured.preferred.width = measured.preferred.width.ceil();
             measured.minimum.width = measured.minimum.width.ceil();
+            measured
+        });
+        self
+    }
+
+    /// Set the desired width independently of the measured useful minimum.
+    /// A parent may allocate less down to that minimum; when the minimum is
+    /// larger than the requested width it remains authoritative. Geometry is
+    /// remeasured at the allocated width, including wrapping and chrome.
+    pub fn preferred_width(self, width: f32) -> Self {
+        self.preferred_width_with(move |_, _, _| width)
+    }
+
+    /// Derive a preferred width from the same prepared data and renderer as
+    /// the component, without replacing its independently measured minimum.
+    pub fn preferred_width_with(
+        mut self,
+        preferred: impl Fn(Level, &Renderer, MeasuredSize) -> f32 + 'a,
+    ) -> Self {
+        self.refresh_preparation();
+        let query = self.query.clone();
+        self.query = Rc::new(move |level, renderer| {
+            let mut measured = query(level, renderer);
+            let width = preferred(level, renderer, measured);
+            measured.preferred.width = if width.is_finite() && width >= 0.0 {
+                width.max(measured.minimum.width)
+            } else {
+                f32::NAN
+            };
             measured
         });
         self
@@ -612,9 +835,20 @@ impl<'a, Message: 'a> Child<'a, Message> {
     /// Native content is measured again
     /// at its allocated width, including the actual height of wrapping text.
     /// The component is responsible for making that form usable.
-    pub fn minimum_width(mut self, minimum: impl Fn(Level, Size) -> f32 + 'a) -> Self {
+    pub fn minimum_width(self, minimum: impl Fn(Level, Size) -> f32 + 'a) -> Self {
+        self.minimum_width_with(move |level, _, preferred| minimum(level, preferred))
+    }
+
+    /// A useful width floor measured from prepared native content using the
+    /// query's renderer. The callback is pure and must capture the same data,
+    /// typography and presentation as this component's selected view.
+    pub fn minimum_width_with(
+        mut self,
+        minimum: impl Fn(Level, &Renderer, Size) -> f32 + 'a,
+    ) -> Self {
+        self.refresh_preparation();
         let query = self.query.clone();
-        let native = if self.composition.is_none() && self.forms.is_none() {
+        let native = if self.composition.is_none() && self.forms.is_none() && self.frame.is_none() {
             Some(self.view.clone())
         } else {
             None
@@ -630,7 +864,7 @@ impl<'a, Message: 'a> Child<'a, Message> {
             if (measured.preferred.width.is_finite() && measured.preferred.width >= 0.0)
                 || recoverable
             {
-                let floor = minimum(level, measured.preferred);
+                let floor = minimum(level, renderer, measured.preferred);
                 if floor.is_finite() && floor >= 0.0 {
                     if recoverable {
                         // Some native Fill controls have no intrinsic width.
@@ -681,6 +915,7 @@ pub fn child<'a, Message: 'a>(
             }
         }),
         composition: None,
+        frame: None,
         forms: None,
         decorator: None,
         hidden: Rc::new(|_| false),
@@ -688,6 +923,9 @@ pub fn child<'a, Message: 'a>(
         weight: 1.0,
         grow: 0.0,
         grow_height: 0.0,
+        preparation: PreparedId::new(),
+        presentation: None,
+        information: None,
     }
 }
 
@@ -713,6 +951,7 @@ pub fn forms<'a, Message: 'a>(
             select_form(&query_forms, level).query(level, renderer)
         }),
         composition: None,
+        frame: None,
         forms: Some(alternatives),
         decorator: None,
         hidden: Rc::new(|_| false),
@@ -720,6 +959,9 @@ pub fn forms<'a, Message: 'a>(
         weight: 1.0,
         grow: 0.0,
         grow_height: 0.0,
+        preparation: PreparedId::new(),
+        presentation: None,
+        information: None,
     }
 }
 
@@ -745,11 +987,31 @@ pub fn scroll_child<'a, Message: 'a>(
     minimum: Size,
 ) -> Child<'a, Message> {
     assert!(finite_size(minimum));
+    scroll_child_with_minimum(view, move |_, _| minimum)
+}
+
+/// Declare a scrolling viewport whose useful floor is measured with the same
+/// native renderer as its contents. A changed level or typography therefore
+/// refreshes both measurement and selected viewport geometry. Nonfinite or
+/// negative queried floors are explicit invalid input, never clipped viewports.
+pub fn scroll_child_with_minimum<'a, Message: 'a>(
+    view: impl Fn(Level) -> Element<'a, Message> + 'a,
+    minimum: impl Fn(Level, &Renderer) -> Size + 'a,
+) -> Child<'a, Message> {
+    let minimum: MinimumQuery<'a> = Rc::new(minimum);
+    let viewport = minimum.clone();
     let mut child = child(view);
     let query = child.query.clone();
     let native = child.view.clone();
     child.query = Rc::new(move |level, renderer| {
+        let minimum = minimum(level, renderer);
         let measured = query(level, renderer);
+        if !finite_size(minimum) {
+            return MeasuredSize {
+                preferred: Size::new(f32::NAN, f32::NAN),
+                minimum,
+            };
+        }
         let invalid = |value: f32| value.is_nan() || value < 0.0;
         if invalid(measured.preferred.width) || invalid(measured.preferred.height) {
             return MeasuredSize {
@@ -786,7 +1048,7 @@ pub fn scroll_child<'a, Message: 'a>(
             minimum,
         }
     });
-    child.viewport = Some(minimum);
+    child.viewport = Some(viewport);
     child
 }
 
@@ -803,6 +1065,7 @@ pub fn spacer<'a, Message: 'a>(minimum: f32) -> Child<'a, Message> {
 
 impl<'a, Message: 'a> Child<'a, Message> {
     fn with_measurement(mut self, query: impl Fn(Level, &Renderer) -> MeasuredSize + 'a) -> Self {
+        self.refresh_preparation();
         self.query = Rc::new(query);
         self
     }
@@ -845,6 +1108,7 @@ fn compose<'a, Message: 'a>(
         view: Rc::new(|_| widget::space().into()),
         query: Rc::new(move |level, renderer| query.measure(level, renderer)),
         composition: Some(composition),
+        frame: None,
         forms: None,
         decorator: None,
         hidden: Rc::new(|_| false),
@@ -852,6 +1116,9 @@ fn compose<'a, Message: 'a>(
         weight: 1.0,
         grow: 0.0,
         grow_height: 0.0,
+        preparation: PreparedId::new(),
+        presentation: None,
+        information: None,
     }
 }
 
@@ -1452,7 +1719,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for FixedComponent<'a, Me
 // or popup state from the committed UI. Restore even when a factory panics.
 struct NamedStateGuard<F: FnOnce()>(Option<F>);
 
-fn isolate_named_state() -> impl Drop {
+pub(crate) fn isolate_named_state() -> impl Drop {
     let saved = tree::NAMED.with(|named| std::mem::take(&mut *named.borrow_mut()));
     NamedStateGuard(Some(move || {
         tree::NAMED.with(|named| *named.borrow_mut() = saved)
@@ -1738,3 +2005,143 @@ mod decorator_tests;
 #[cfg(test)]
 #[path = "layout_input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+#[path = "layout_presentation_tests.rs"]
+mod presentation_tests;
+
+#[cfg(test)]
+mod renderer_minimum_tests {
+    use super::*;
+    use cosmic::iced::advanced::renderer::Headless;
+    use cosmic::iced::{Font, Pixels};
+
+    fn renderer() -> Renderer {
+        cosmic::iced::futures::executor::block_on(<Renderer as Headless>::new(
+            Font::default(),
+            Pixels(14.0),
+            Some("tiny-skia"),
+        ))
+        .expect("headless tiny-skia renderer")
+    }
+
+    fn floor(size: f32) -> Child<'static, ()> {
+        child(move |_| {
+            widget::container(widget::text("More models").size(size))
+                .padding([4.0, 12.0])
+                .into()
+        })
+    }
+
+    #[test]
+    fn useful_width_uses_actual_native_typography_in_query_and_commit() {
+        let renderer = renderer();
+        let small = floor(12.0);
+        let large = floor(24.0);
+        let small_width = small.query(Level::Preferred, &renderer).preferred.width;
+        let large_width = large.query(Level::Preferred, &renderer).preferred.width;
+        assert!(
+            large_width > small_width,
+            "the native font determines the useful floor"
+        );
+        let content: Child<'_, ()> = child(|_| {
+            widget::text("A wrapping model label that stays complete")
+                .width(Length::Fill)
+                .into()
+        })
+        .minimum_width_with(move |level, renderer, _| {
+            if level >= Level::Mild {
+                large.query(level, renderer).preferred.width
+            } else {
+                small.query(level, renderer).preferred.width
+            }
+        });
+        for (level, width) in [(Level::Preferred, small_width), (Level::Mild, large_width)] {
+            assert_eq!(content.query(level, &renderer).minimum.width, width);
+            assert!(
+                content
+                    .query_at(level, &renderer, Size::new(width - 1.0, 1000.0))
+                    .is_err()
+            );
+            let mut selected = stages(vec![Stage::new(level, content.clone())]);
+            let mut tree = Tree::empty();
+            let node = selected.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(width, 1000.0)),
+            );
+            assert!(
+                selected.selection().unwrap().is_ok(),
+                "native commit must verify the measured floor"
+            );
+            assert_eq!(node.size().width, width);
+        }
+    }
+
+    #[test]
+    fn scrolling_floor_refreshes_with_native_typography_and_rejects_small_offers() {
+        let renderer = renderer();
+        for font_size in [12.0, 24.0] {
+            let probe = floor(font_size);
+            let minimum = probe.query(Level::Preferred, &renderer).preferred;
+            let content: Child<'_, ()> = scroll_child_with_minimum(
+                move |_| {
+                    widget::scrollable(widget::text("A model row\n".repeat(50)).size(font_size))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                },
+                move |level, renderer| probe.query(level, renderer).preferred,
+            );
+            assert_eq!(content.query(Level::Preferred, &renderer).minimum, minimum);
+            assert!(
+                content
+                    .query_at(
+                        Level::Preferred,
+                        &renderer,
+                        Size::new(minimum.width - 1.0, 100.0)
+                    )
+                    .is_err()
+            );
+            assert!(
+                content
+                    .query_at(
+                        Level::Preferred,
+                        &renderer,
+                        Size::new(minimum.width, minimum.height - 1.0)
+                    )
+                    .is_err()
+            );
+            let mut selected = stages(vec![Stage::new(Level::Preferred, content)]);
+            let mut tree = Tree::empty();
+            let node = selected.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, minimum),
+            );
+            assert!(selected.selection().unwrap().is_ok());
+            assert_eq!(node.size(), minimum);
+        }
+    }
+
+    #[test]
+    fn invalid_measured_floors_do_not_produce_a_plan() {
+        let renderer = renderer();
+        for invalid in [f32::NAN, f32::INFINITY, -1.0] {
+            let width: Child<'_, ()> =
+                child(|_| widget::text("Model").into()).minimum_width_with(move |_, _, _| invalid);
+            assert_eq!(
+                width.query_at(Level::Preferred, &renderer, Size::new(300.0, 300.0)),
+                Err(AllocationError::InvalidInput)
+            );
+            let scrolling: Child<'_, ()> = scroll_child_with_minimum(
+                |_| widget::scrollable(widget::text("Model")).into(),
+                move |_, _| Size::new(invalid, 32.0),
+            );
+            assert_eq!(
+                scrolling.query_at(Level::Preferred, &renderer, Size::new(300.0, 300.0)),
+                Err(AllocationError::InvalidInput)
+            );
+        }
+    }
+}
