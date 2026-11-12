@@ -2,7 +2,10 @@
 
 The household apps' shared libcosmic widgets. Juliet, 24 Oct 2026: "use shared code as shared UI component code to prevent having to maintain multiple versions of the same code and having inconsistent UI".
 
-**The rule:** a widget used by more than one app lives here, and those apps call it. A widget used by one app stays in that app until a second app needs it.
+**The rule:** shared UI behaviour lives here, including generic controls and
+layout used initially by one app. App-specific content and actions stay in the
+app. A first consumer exercises the shared abstraction; it does not make a
+generic menu, list or hover policy app-specific.
 
 What goes where (household-ui `RULES.md`, memory `shared-ui-code`):
 
@@ -48,6 +51,98 @@ trees. `width()` includes submenus; `map()` adapts messages without rebuilding
 menu metadata. `MenuRow` also supplies the row contents and measured width
 for native menu-bar adapters; `measured_width` shares its bounded shaping cache
 with other interface text at any size and font.
+
+### Compositional menus and hover cards
+
+`menu_parts` and `popup` are an experimental alternative to the native menu
+controller, with attached-surface placement inside `layout`. Terminal is trialling
+them for its model selector and composer overflow; the legacy API remains.
+
+`menu_parts::row_content` reserves the leading slots declared by `RowSlots`
+even when an individual row has no mark or icon. Its remaining cell puts the
+label on the left and optional trailing content on the right. There is no
+separate shared shortcut column. `groups` and `expandable` accept arbitrary
+elements, so a heading or text field is ordinary content. Expansion state and
+the consequences of an action remain explicit application state.
+
+`action_row` requires a `TooltipChoice`, including an explicit `NoTooltip`.
+Passing no press message disables activation without removing the outer hover
+target. `action_row_with` also configures the native button, for example its
+native style. The convenience `action_row` still uses the legacy tooltip adapter.
+`menu_surface` instead wraps resolved rows with `hover_card`, giving disabled
+explanations the engine-owned placement described below.
+
+`popup::host(base).chain(panels)` presents one application-owned menu chain
+using an in-window Iced overlay. Each `Panel` takes an `Attachment` and staged
+`Child` representations. `layout::choose_attached` measures against each
+declared anchor offer and returns the complete `AttachedPlan`; committing uses
+the engine's existing geometry and native verification. There is no later
+move-back-inside-window operation. A non-fitting surface reports failure;
+scrolling must be a declared representation.
+
+Panel children get input before menu navigation. `FocusTarget` opts native
+focusable IDs into navigation without examining child widget types. The app
+handles dismiss/close messages and supplies stable panel keys: retain a key
+across resize, change it when replacing a panel with a different menu.
+
+`list_navigation::Navigation<Id>` owns stable target identity and ordering,
+with an explicit axis and clamp/wrap end policy. It keeps disabled entries
+reachable while separating activation from navigation and application selection.
+Menus layer branch entry/return on this model; `focus_regions::regions` uses it
+for an editor and declared control groups. The native tree determines which
+configured IDs exist in the accepted responsive layout. F6 switches regions,
+Tab switches control groups, and each group's axis determines its arrow keys.
+The editor retains its own Tab completion and selection. An open menu forwards
+region/group navigation after restoring its trigger.
+
+`menu_parts::row_style`, `row_target` and `inline_group` share the selected wash,
+muted expansion frame and separate dark-grey keyboard target. The adjoining
+bottom contour derives from the frame's actual inset. Supply the app's semibold
+text constructor through `MenuSurface::emphasized_body`; style helpers do not
+change font weight. Inline branches expand only on explicit activation.
+
+`popup::Anchors` records live sources during native overlay traversal. Wrap a
+popup trigger with `anchors.trigger(id, content)` and attach its panel using
+`Panel::source(id)`. Hidden sources fail placement, allowing the application to
+close their sessions. Named sources are keyed by logical identity across rebuilds.
+`popup::focus_target` exposes native focus operations for controls that do not
+provide them themselves; do not duplicate its ID on the wrapped child.
+
+`Alignment::StartBounded` declares a bounded cross-axis origin while preserving
+the requested side. `hover_card::hover` takes the same registry and explicit
+stages/candidates. The engine first offers clear regions beside finite popup
+rectangles, then permits overlap if no declared useful representation fits.
+Hover cards paint above menus and take no input. An open source suppresses its
+own hover; unrelated sources remain eligible. One registry owns one active hover.
+During incremental migration, `Host::open_sources` registers triggers whose
+menus are still provided by another native controller. Their own information
+uses the same suppression and timer-reset policy as shared menu sources.
+
+Pointer movement and keyboard navigation share that information owner without
+moving each other's native focus. Both start the same 500 ms delay; a stationary
+pointer cannot reclaim ownership on redraw. Alt+H opens the current target's
+information immediately, including disabled explanations. Escape first dismisses
+information and suppresses reopening for the unchanged target, then closes a
+menu branch on the next press. Window deactivation cancels the transient chain,
+information and pending timers. Native input children receive editing keys first.
+
+`menu_surface::MenuSurface` adapts resolved menu metadata into these components.
+Its optional `preferred_width` sets a shared family's visible-card preference,
+with an instance override made by supplying another value. The enclosing app
+composition chooses the family; the adapter contains no domain-specific family
+names. This uses `layout::Child::preferred_width` independently of the measured
+usable minimum. Shadow space is additional. Detached cards use the preference;
+inline children use their parent's allocated width minus frame insets. Menus
+without an explicit policy retain their content-measured sizing.
+It does not constrain the host's arbitrary contents. The caller supplies root
+placement and application-owned submenu paths; its standard submenus try right
+then left, with an explicit scrolling representation for bounded windows.
+
+Structural panel/list policy is currently supplied through explicit candidate
+families, rather than inferred from arbitrary widget ancestry. Full menu
+accessibility and coordination with legacy popup producers remain migration work.
+The native component fixture's optional `HOUSEHOLD_MENU_FIXTURE_OUT` output
+contains raw RGBA frames with dimensions in the filename.
 
 `text_menu(target, &words, style)` wraps a native text input, editor or
 selectable text. Supply localized `TextMenuWords` and a `MenuStyle` for the
@@ -139,6 +234,50 @@ do not invoke decorators, and undecorated controls keep their original native
 state shape. The shared `Level` alignment finds label/caption lines through
 vertically transparent allocation wrappers and forwards accessibility.
 
+`framed_child(content, padding, decorate)` adds explicit chrome instead. It
+subtracts the declared insets before negotiating the immediate child, retains
+its forms and useful minima, and verifies the native decoration at commit.
+`popup_surface::reserve_shadow` uses this adapter for the common menu/hover
+shadow; its transparent allowance participates in window containment.
+
+`PresentationFamily` declares a default and supported `Presentation` pairs.
+`Emphasis` (normal/emphasised) and `Detail` (concise/verbose) resolve independently:
+an explicit instance request wins over immediate composition defaults, then
+family defaults. `prepare(instance, defaults, build)` builds an ordinary `Child`
+once, or returns `UnsupportedPresentation` without invoking the builder. Nothing
+cascades implicitly to descendants. Unsupported presentation is distinct from
+layout no-fit; existing menu adapters support only normal/concise.
+
+Prepared children and their plans carry private snapshot identities. Rebuild a
+child when data, presentation, font, theme or density dependencies change;
+factories must capture immutable prepared data. A retained plan cannot certify
+a rebuilt child just because its dimensions coincide. Rust cannot enforce
+immutability of arbitrary factory captures, so this remains a caller obligation.
+
+`Child::report_information(SourceId, revision, report)` declares family-local
+`InformationId` losses (`Shortened` or `Omitted`) for each queried form.
+`GeometryPlan::reports()` inspects trial facts without publishing them.
+`SourceReports` collects facts only through the accepted, verified native tree;
+collect afresh after layout and match the content revision. A missing report
+does not mean all information is visible. `Anchors::reported_anchor` bridges
+accepted source facts into the live popup registry, available through
+`Anchors::information`. Hidden, mismatched or ambiguous sources publish no facts.
+Status, independently useful previews and intentionally summarised information
+are not automatically compaction losses.
+
+`hover_card::text_box` prepares wrapping text with normal/emphasised concise
+presentations; `text_box_with` preserves application typography.
+`normal_text_box_with` adapts an existing normal-only renderer explicitly.
+`hover_box` frames any prepared box through the same layout and popup surface.
+For contents conditional on source compaction, `hover_box_with_report` prepares
+the box after source acceptance, passing an owned optional current report to
+the composing factory. It reuses that prepared box across the hover's placement
+queries. Missing facts remain explicit; source measurement never invokes the
+hover factory. Prepared application data belongs in the factory's immutable
+capture, rather than a query closure reading the live registry.
+Richer contents use ordinary child compositions and family-owned renderers;
+the host does not interpret their semantic roles or rearrange them.
+
 `horizontal_scroll(content)` gives an unavoidably wide control an explicit
 native horizontal viewport. Its embedded scrollbar has a separate shared lane,
 reserved with or without overflow, so text and controls cannot be covered by
@@ -167,8 +306,8 @@ capabilities are forwarded; enable this crate's `a11y` feature whenever the app
 enables libcosmic accessibility.
 
 Queries currently use exact native measurements, not persistent geometry
-caches or estimates. Cache invalidation, stale-plan protocols and automatic
-window-minimum updates are separate work. The engine does not solve arbitrary
+caches or estimates. General measurement caching and automatic window-minimum
+updates remain separate work. The engine does not solve arbitrary
 constraints or choose product policy: a declared stage deterministically
 allocates its ranges, measures the result and checks it.
 

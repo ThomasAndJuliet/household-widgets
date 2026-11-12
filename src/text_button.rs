@@ -126,6 +126,7 @@ impl<'a, M: Clone + 'a> From<TextButton<'a, M>> for Element<'a, M> {
 
 pub struct Tertiary<'a, M> {
     label: String,
+    id: Option<widget::Id>,
     on_press: Option<M>,
     leading: Option<widget::icon::Handle>,
     trailing: Option<widget::icon::Handle>,
@@ -141,6 +142,7 @@ impl<'a, M: Clone> Tertiary<'a, M> {
     pub fn new(label: impl Into<String>, class: theme::Button, noop: M) -> Self {
         Self {
             label: label.into(),
+            id: None,
             on_press: None,
             leading: None,
             trailing: None,
@@ -151,6 +153,12 @@ impl<'a, M: Clone> Tertiary<'a, M> {
             class,
             noop,
         }
+    }
+
+    /// Give the native control a stable identity for focus navigation.
+    pub fn id(mut self, id: widget::Id) -> Self {
+        self.id = Some(id);
+        self
     }
 
     pub fn on_press(mut self, message: M) -> Self {
@@ -245,6 +253,10 @@ impl<'a, M: Clone + 'a> From<Tertiary<'a, M>> for Element<'a, M> {
                 tertiary.width
             })
             .on_press_maybe(tertiary.on_press);
+        let button = match tertiary.id {
+            Some(id) => button.id(id),
+            None => button,
+        };
         let button = if tertiary.icon_only {
             button.align_x(Alignment::Center)
         } else {
