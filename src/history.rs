@@ -25,7 +25,6 @@ pub enum Turn<P> {
 }
 
 /// A state kept, the app's part of its step, and the state's size in bytes
-#[derive(Debug)]
 struct Step<S, P> {
     state: S,
     part: Option<P>,
@@ -58,8 +57,12 @@ impl Run {
 /// A box's history: each step the state before it (to undo) or after it (to
 /// redo), at most [`STEPS`] steps and [`BYTES`] bytes. `S` is the box's
 /// whole state, so that going back is putting it back.
+///
+/// A sensitive box's history ([`History::sensitive`]) zeroizes each state
+/// it lets go of (a step past the bounds, Redo's steps when a new step is
+/// taken, the steps of parts forgotten) and every state it holds when it is
+/// dropped; undoing and redoing are the same as ever
 #[doc(hidden)]
-#[derive(Debug)]
 pub struct History<S, P> {
     undo: VecDeque<Step<S, P>>,
     redo: Vec<Step<S, P>>,
@@ -67,6 +70,8 @@ pub struct History<S, P> {
     bytes: usize,
     /// The run of typing or deleting going on, if any
     run: Option<Run>,
+    /// How a state's text is zeroized, for a sensitive box's history
+    wipe: Option<fn(&mut S)>,
 }
 
 impl<S, P> Default for History<S, P> {
@@ -76,14 +81,62 @@ impl<S, P> Default for History<S, P> {
             redo: Vec::new(),
             bytes: 0,
             run: None,
+            wipe: None,
+        }
+    }
+}
+
+/// How many steps, not what they hold, which may be a sensitive box's
+impl<S, P> std::fmt::Debug for History<S, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("History")
+            .field("undo", &self.undo.len())
+            .field("redo", &self.redo.len())
+            .field("bytes", &self.bytes)
+            .field("sensitive", &self.wipe.is_some())
+            .finish()
+    }
+}
+
+impl<S, P> Drop for History<S, P> {
+    fn drop(&mut self) {
+        if let Some(wipe) = self.wipe {
+            for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+                wipe(&mut step.state);
+            }
         }
     }
 }
 
 impl<S, P> History<S, P> {
+    /// A sensitive box's history: `wipe` zeroizes a state's text
+    pub(crate) fn sensitive(wipe: fn(&mut S)) -> Self {
+        Self {
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+            bytes: 0,
+            run: None,
+            wipe: Some(wipe),
+        }
+    }
+
+    /// Whether it is a sensitive box's
+    pub(crate) fn is_sensitive(&self) -> bool {
+        self.wipe.is_some()
+    }
+
     /// The steps there are to undo and to redo
     pub(crate) fn len(&self) -> (usize, usize) {
         (self.undo.len(), self.redo.len())
+    }
+
+    /// `step` let go of: its size off the total, its state zeroized if the
+    /// box is sensitive
+    fn discard(&mut self, mut step: Step<S, P>) {
+        self.bytes -= step.bytes;
+        if let Some(wipe) = self.wipe {
+            wipe(&mut step.state);
+        }
     }
 }
 
@@ -128,7 +181,7 @@ impl<S, P: Clone> History<S, P> {
         });
         while self.undo.len() > STEPS || (self.bytes > BYTES && self.undo.len() > 1) {
             let oldest = self.undo.pop_front().expect("a step");
-            self.bytes -= oldest.bytes;
+            self.discard(oldest);
         }
     }
 
@@ -155,7 +208,26 @@ impl<S, P: Clone> History<S, P> {
 
     /// What Redo would have brought back is gone, the steps before kept
     pub(crate) fn drop_redo(&mut self) {
-        self.bytes -= self.redo.drain(..).map(|step| step.bytes).sum::<usize>();
+        for step in std::mem::take(&mut self.redo) {
+            self.discard(step);
+        }
+    }
+
+    /// The steps with an app's part, and those before them, gone: see
+    /// [`Undoable::forget_parts`]
+    fn forget_parts(&mut self) {
+        if let Some(at) = self.undo.iter().rposition(|step| step.part.is_some()) {
+            let gone: Vec<_> = self.undo.drain(..=at).collect();
+            for step in gone {
+                self.discard(step);
+            }
+        }
+        if let Some(at) = self.redo.iter().rposition(|step| step.part.is_some()) {
+            let gone: Vec<_> = self.redo.drain(..=at).collect();
+            for step in gone {
+                self.discard(step);
+            }
+        }
     }
 
     fn part(step: Option<&Step<S, P>>) -> Option<&P> {
@@ -229,21 +301,7 @@ pub trait Undoable {
     /// either way, the steps of the text alone between kept. Going back
     /// past one would bring back text its part took elsewhere
     fn forget_parts(&mut self) {
-        let history = self.history_mut();
-        if let Some(at) = history.undo.iter().rposition(|step| step.part.is_some()) {
-            history.bytes -= history
-                .undo
-                .drain(..=at)
-                .map(|step| step.bytes)
-                .sum::<usize>();
-        }
-        if let Some(at) = history.redo.iter().rposition(|step| step.part.is_some()) {
-            history.bytes -= history
-                .redo
-                .drain(..=at)
-                .map(|step| step.bytes)
-                .sum::<usize>();
-        }
+        self.history_mut().forget_parts();
     }
 
     /// The text replaced by the app, the caret at `caret`: one step, which
@@ -298,6 +356,65 @@ pub trait Undoable {
 #[cfg(test)]
 mod tests {
     use super::{BYTES, History, STEPS};
+
+    /// A state the test can still read once the history has let go of it
+    type Shared = std::rc::Rc<std::cell::RefCell<String>>;
+
+    fn wipe(state: &mut Shared) {
+        use zeroize::Zeroize;
+        state.borrow_mut().zeroize();
+    }
+
+    fn shared(text: &str) -> Shared {
+        std::rc::Rc::new(std::cell::RefCell::new(text.to_string()))
+    }
+
+    /// A sensitive history zeroizes each state it lets go of: past its
+    /// bounds, Redo's when a new step is taken, the parts forgotten, and all
+    /// it holds when dropped. Undo and Redo hand states back as ever
+    #[test]
+    fn a_sensitive_history_zeroizes_what_it_lets_go_of() {
+        // Past its bounds
+        let mut history: History<Shared, ()> = History::sensitive(wipe);
+        let oldest = shared("first secret");
+        history.record(oldest.clone(), 12, None);
+        for _ in 0..STEPS {
+            history.record(shared("later"), 5, None);
+        }
+        assert_eq!(*oldest.borrow(), "", "the step past the bound is zeroized");
+        // Redo's steps, when a new step is taken
+        let mut history: History<Shared, ()> = History::sensitive(wipe);
+        history.record(shared("before"), 6, None);
+        let now = shared("undone");
+        let (back, _) = history.turn(true, now.clone(), 6).expect("a step");
+        assert_eq!(
+            *back.borrow(),
+            "before",
+            "Undo hands the state back as ever"
+        );
+        history.record(shared("other"), 5, None);
+        assert_eq!(*now.borrow(), "", "Redo's step is zeroized when it goes");
+        // Parts forgotten
+        let mut history: History<Shared, u8> = History::sensitive(wipe);
+        let with_part = shared("with its part");
+        history.record(with_part.clone(), 13, Some(1));
+        history.record(shared("after"), 5, None);
+        history.forget_parts();
+        assert_eq!(*with_part.borrow(), "");
+        // All it holds, when dropped
+        let kept = shared("kept");
+        let mut history: History<Shared, ()> = History::sensitive(wipe);
+        history.record(kept.clone(), 4, None);
+        drop(history);
+        assert_eq!(*kept.borrow(), "");
+        // An ordinary history zeroizes nothing
+        let plain = shared("plain");
+        let mut history: History<Shared, ()> = History::default();
+        history.record(plain.clone(), 5, None);
+        drop(history);
+        assert_eq!(*plain.borrow(), "plain");
+        assert!(!format!("{:?}", History::<Shared, ()>::sensitive(wipe)).contains("secret"));
+    }
 
     #[test]
     fn the_history_keeps_at_most_its_steps_and_bytes() {

@@ -225,6 +225,259 @@ fn a_password_keeps_no_history() {
     );
 }
 
+/// A change leaves nothing of the password it replaces in the box's
+/// buffer: the old value is zeroed where it was, the new one written over
+/// the start of it (what the allocator was given back, before the buffer
+/// grew, was zeroed too, but cannot be read once given back)
+#[test]
+fn a_passwords_change_leaves_nothing_of_the_old_one_in_its_buffer() {
+    let password_edit = |value: &str| {
+        Action::Edit(Edit {
+            value: value.into(),
+            before: span(0, 0),
+            after: span(value.len(), value.len()),
+            by: By::Typed { space: false },
+            hidden: true,
+        })
+    };
+    let mut password = PasswordBox::new();
+    password.perform(password_edit("correct horse battery staple"));
+    // (shorter: written in the same buffer, which every change zeroes
+    // first, so all of it can be read now)
+    password.perform(password_edit("tr0ub4dor"));
+    let buffer = password.buffer();
+    assert_eq!(&buffer[..9], b"tr0ub4dor");
+    assert!(
+        buffer[9..].iter().all(|byte| *byte == 0),
+        "the old password is left in the buffer: {buffer:?}"
+    );
+    // The app's change too
+    password.set("x", Caret::End);
+    let buffer = password.buffer();
+    assert_eq!(buffer[0], b'x');
+    assert!(buffer[1..].iter().all(|byte| *byte == 0));
+}
+
+/// take() hands the password over: the box is empty, still writes nothing
+/// out, and can be typed into again
+#[test]
+fn a_password_taken_leaves_its_box_empty() {
+    let mut password = PasswordBox::new();
+    password.set("swordfish", Caret::End);
+    assert_eq!(password.take(), "swordfish");
+    assert_eq!(password.value(), "");
+    assert_eq!(password.take(), "", "nothing is left to take");
+    password.set("hunter2", Caret::End);
+    assert_eq!(password.value(), "hunter2");
+    let written = format!("{password:?}");
+    assert!(!written.contains("hunter2"), "{written}");
+    assert!(written.contains("(hidden)"), "{written}");
+}
+
+/// A sensitive box undoes and redoes as any box does, and writes nothing
+/// of its value out: neither the box nor its field's edits
+#[test]
+fn a_sensitive_box_undoes_as_ever_and_writes_nothing_out() {
+    let mut plain: ShortTextBox = ShortTextBox::new();
+    let mut sensitive: ShortTextBox = ShortTextBox::sensitive();
+    assert!(sensitive.is_sensitive() && !plain.is_sensitive());
+    for short in [&mut plain, &mut sensitive] {
+        typed(short, "Synthetic Person");
+        short.replace("4/29", Caret::End);
+    }
+    assert_eq!(sensitive.value(), "4/29");
+    assert_eq!(
+        undone(&mut sensitive),
+        undone(&mut plain),
+        "the same steps back"
+    );
+    sensitive.perform(Action::Redo);
+    plain.perform(Action::Redo);
+    assert_eq!(sensitive.value(), plain.value(), "and the same forward");
+    assert!(!sensitive.value().is_empty());
+    let written = format!("{sensitive:?}");
+    assert!(
+        !written.contains("Synthetic") && written.contains("(hidden)"),
+        "{written}"
+    );
+    // Its field's edits are not written out either; a plain box's are
+    let mut window = Window::new();
+    let (messages, _) = window.send(field(&sensitive), &click(IN_FIELD));
+    apply(&mut sensitive, messages);
+    let (messages, _) = window.send(
+        field(&sensitive),
+        &[press("q", Code::KeyQ, Modifiers::empty())],
+    );
+    let written = format!("{messages:?}");
+    assert!(!written.contains("Synthetic"), "{written}");
+    let edits = apply(&mut sensitive, messages);
+    assert_eq!(edits.len(), 1, "the field still reports its edit");
+    // and Ctrl+Z is the field's, published for the box to undo
+    let (messages, _) = window.send(
+        field(&sensitive),
+        &[press("z", Code::KeyZ, Modifiers::CTRL)],
+    );
+    assert_eq!(messages, [Message::Box(Action::Undo)]);
+}
+
+fn shown_password(password: &PasswordBox) -> short_text_box::Field<'_, Message> {
+    short_text_box::shown(password, "", Message::Box)
+}
+
+/// A password shown as a plain field is drawn as a text box is, the same
+/// size, and keeps a password's ways: Ctrl+Z taken and nothing undone,
+/// its edits not written out
+#[test]
+fn a_password_shown_plain_is_a_text_fields_size_and_a_passwords_box() {
+    let mut window = Window::new();
+    let mut password = PasswordBox::new();
+    password.set("generated-secret", Caret::End);
+    let plain: ShortTextBox = ShortTextBox::starting_with("generated-secret");
+    assert_eq!(
+        window.size_of(shown_password(&password)),
+        window.size_of(field(&plain)),
+        "the size a text box is"
+    );
+    let (messages, _) = window.send(shown_password(&password), &click(IN_FIELD));
+    for message in messages {
+        if let Message::Box(action) = message {
+            password.perform(action);
+        }
+    }
+    let (messages, _) = window.send(
+        shown_password(&password),
+        &[press("q", Code::KeyQ, Modifiers::empty())],
+    );
+    assert!(
+        !format!("{messages:?}").contains("generated-secret"),
+        "{messages:?}"
+    );
+    for message in messages {
+        if let Message::Box(action) = message {
+            password.perform(action);
+        }
+    }
+    let (messages, statuses) = window.send(
+        shown_password(&password),
+        &[press("z", Code::KeyZ, Modifiers::CTRL)],
+    );
+    assert!(messages.is_empty(), "no history to undo: {messages:?}");
+    assert_eq!(statuses, [Status::Captured]);
+}
+
+/// Keys as a window can give them, many at once before the app answers
+/// (typing fast, a VNC session): the input edits its own copy of the value
+/// with each, so a character the field does not take must be refused as it
+/// comes, not by the app afterwards
+#[test]
+fn a_field_refuses_what_it_does_not_take_however_fast_it_comes() {
+    fn pick(short: &ShortTextBox, accepting: bool) -> short_text_box::Field<'_, Message> {
+        match accepting {
+            true => field(short).accepts(|c| !c.is_whitespace()),
+            false => field(short),
+        }
+    }
+    let keys: Vec<(Event, Point)> = "alpha beta"
+        .chars()
+        .map(|c| {
+            let letter = c.to_string();
+            key(
+                Key::Character(letter.clone().into()),
+                Code::KeyA,
+                Modifiers::empty(),
+                Some(&letter),
+            )
+        })
+        .collect();
+    for (accepting, want) in [(true, "alphabeta"), (false, "alpha beta")] {
+        let mut window = Window::new();
+        let mut short: ShortTextBox = ShortTextBox::new();
+        let (messages, _) = window.send(pick(&short, accepting), &click(IN_FIELD));
+        apply(&mut short, messages);
+        // All ten keys at once, before the app has answered any
+        let (messages, statuses) = window.send(pick(&short, accepting), &keys);
+        apply(&mut short, messages);
+        assert_eq!(short.value(), want, "taking only some: {accepting}");
+        assert_eq!(statuses.len(), 10);
+    }
+}
+
+/// An error keeps the normal box's light fill in both themes (Juliet,
+/// 13 Nov: "It should either use the light background or a red tint").
+/// The border is still libcosmic's single error border, in each state,
+/// whether the app marks the field invalid or supplies an error message.
+#[test]
+fn a_field_at_fault_keeps_the_light_fill_and_one_error_border() {
+    let short: ShortTextBox = ShortTextBox::starting_with("one");
+    let inside = Point::new(IN_FIELD.x + 60.0, IN_FIELD.y);
+    for (theme, fill) in [
+        (Theme::light(), [235, 235, 235]),
+        (Theme::dark(), [27, 27, 27]),
+    ] {
+        let error = rgb8(theme.cosmic().destructive_color().into());
+        let rest = rgb8(
+            Look::normal()
+                .border(&theme, crate::look::State::Rest)
+                .color,
+        );
+        let ring = rgb8(
+            Look::normal()
+                .border(&theme, crate::look::State::Focused)
+                .color,
+        );
+        for native_error in [false, true] {
+            let view = || {
+                if native_error {
+                    field(&short).error("")
+                } else {
+                    field(&short).invalid(true)
+                }
+            };
+            for state in ["rest", "hovered", "focused"] {
+                let mut window = Window::new();
+                let mut libcosmic = Window::new();
+                let input = || {
+                    widget::text_input("", "one")
+                        .on_input(|_| Message::Submit)
+                        .error("")
+                };
+                if state == "focused" {
+                    let _ = window.send(view(), &click(IN_FIELD));
+                    let _ = libcosmic.send(input(), &click(IN_FIELD));
+                }
+                let pointer = if state == "hovered" { IN_FIELD } else { BELOW };
+                let shot = window.shot_at(view(), &theme, pointer);
+                let expected = libcosmic.shot_at(input(), &theme, pointer);
+                let all = 0..WINDOW.height as usize;
+                let border = shot.count_in(all.clone(), error);
+                assert!(
+                    border > 20,
+                    "the error border ({state}, {native_error}): {border}"
+                );
+                assert_eq!(
+                    border,
+                    expected.count_in(all.clone(), error),
+                    "one native error border ({state}, {native_error})"
+                );
+                for (colour, what) in [(rest, "rest border"), (ring, "focus ring")] {
+                    // Changing the fill changes antialiasing at the corners
+                    // and text edges; allow those few pixels, not another ring.
+                    assert!(
+                        shot.count_in(all.clone(), colour)
+                            <= expected.count_in(all.clone(), colour) + 16,
+                        "no household {what} beside the error border ({state}, {native_error})"
+                    );
+                }
+                assert_eq!(
+                    shot.at(inside),
+                    fill,
+                    "the normal light field fill, including in error ({state}, {native_error})"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_menu_offers_a_short_boxs_undo_and_redo() {
     let mut short: ShortTextBox = ShortTextBox::new();
@@ -309,6 +562,34 @@ impl Window {
         }
         self.cache = ui.into_cache();
         (messages, statuses)
+    }
+
+    /// The size `view`'s text field is laid out at
+    fn size_of<'a, M: 'a>(&mut self, view: impl Into<Element<'a, M>>) -> Size {
+        use cosmic::iced::advanced::widget::{Id, Operation, operation};
+        struct Find(Option<Size>);
+        impl Operation for Find {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text_input(
+                &mut self,
+                _: Option<&Id>,
+                bounds: cosmic::iced::Rectangle,
+                _: &mut dyn operation::TextInput,
+            ) {
+                self.0.get_or_insert(bounds.size());
+            }
+        }
+        let mut ui = UserInterface::build(
+            page(view.into()),
+            WINDOW,
+            Cache::default(),
+            &mut self.renderer,
+        );
+        let mut find = Find(None);
+        ui.operate(&self.renderer, &mut find);
+        find.0.expect("a text field")
     }
 
     /// `view` drawn in `theme`, the pointer away from it

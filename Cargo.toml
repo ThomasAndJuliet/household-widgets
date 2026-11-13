@@ -28,6 +28,9 @@ iced_accessibility = { git = "https://github.com/pop-os/libcosmic.git", optional
 # The colour maths (the muted accent, what goes on it); the app's Cargo.lock
 # decides the revision
 household-tones = { git = "https://github.com/ThomasAndJuliet/household-kit.git" }
+# Zeroing what a password box lets go of (PasswordBox), as the terminal
+# zeroes its secrets; MIT OR Apache-2.0
+zeroize = "1"
 
 # For this repository's own build only (its tests, Clippy and CI): the
 # household libcosmic fork at a fixed revision. Cargo reads [patch] only

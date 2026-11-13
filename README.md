@@ -245,7 +245,8 @@ Whether a window is behind others is the app's to say, per box, as it builds tha
 | Call | Is |
 | --- | --- |
 | `ShortTextBox::new()`, `ShortTextBox::starting_with(text)` | a field's value with its undo history, nothing to undo yet; it derefs to the `str`, and `.value()`. A value that is where the field starts (a page number shown as the pages move) is a new box |
-| `PasswordBox::new()` | a password's value, with no history, as in GTK: `.perform(action)` (Undo and Redo do nothing), `.set(text, caret)`; it derefs to the `str` and writes nothing of it in `Debug` |
+| `ShortTextBox::sensitive()` | a box for values that are not secrets but must not linger (a card's name and expiry): Undo and Redo as ever, but the value it replaces, every step its history lets go of (past its bounds, Redo's when a new step is taken, parts forgotten) and all it holds when dropped are zeroized, and neither `Debug` nor its field's edits write its value out; `.is_sensitive()` |
+| `PasswordBox::new()` | a password's value, with no history, as in GTK: `.perform(action)` (Undo and Redo do nothing), `.set(text, caret)`, `.take()` (the value handed over, the box empty again); it derefs to the `str` and writes nothing of it in `Debug`. Nothing of a password stays in memory it lets go of: each change zeroizes the value it replaces, in its own buffer, and dropping it zeroizes its value |
 | `short.perform(action)` | does a `short_text_box::Action`: the field's `Edit`, `Undo`, `Redo`; a step with the app's part hands it back as `Turn` |
 | `short.replace(text, caret)`, `short.replace_with(text, caret, part)` | the app's change of the value (clearing a search): one step Ctrl+Z takes back; the field puts its caret at `caret`, a `short_text_box::Caret` (`Start`, `End`, `At { anchor, caret }` in graphemes). The same value again by `replace` is nothing: no step, and the caret left where it is |
 | `short.undo_part()`, `short.redo_part()`, `short.forget_parts()`, `short.can_undo()`, `short.can_redo()` | as the text box's (`Undoable`) |
@@ -253,9 +254,12 @@ Whether a window is behind others is the app's to say, per box, as it builds tha
 | `short_text_box::text(&short, placeholder, on_action)` | the field, as libcosmic's `text_input` |
 | `short_text_box::search(&short, placeholder, on_action)` | as `search_input`; `.on_clear(message)` shows its clear button, and the app clears the box with `replace` |
 | `short_text_box::secure(&password, placeholder, on_action, hidden, on_toggle)` | as `secure_input`, over a `PasswordBox`, with its show-or-hide button when `on_toggle` is given; the other kinds take only a `ShortTextBox`, so a password cannot be shown plain nor a plain box keep a password's history |
+| `short_text_box::shown(&password, placeholder, on_action)` | a `PasswordBox` shown as a plain one-line field, drawn as `text` draws one and the same size: a secret the person must see as it is typed (a password generated for them, a page's prompt answered), kept as a password is: no history, nothing of it written out, zeroized as it goes |
 | `short_text_box::inline(..)`, `short_text_box::editable(.., editing, on_toggle_edit)` | as `inline_input` and `editable_input` |
 | `.on_submit(m)`, `.on_clear(m)`, `.on_focus(m)`, `.on_unfocus(m)`, `.on_tab(m)`, `.on_paste(f)`, `.id`, `.width`, `.padding`, `.size`, `.font`, `.label`, `.helper_text`, `.error`, `.select_on_focus`, `.leading_icon`, `.trailing_icon` | on the field, passed on to libcosmic's input with the app's own messages; `.on_paste` is told after the box's own edit |
 | `.behind(window_behind)` | the field's window is behind others: its focused border is the rest colour |
+| `.invalid(at_fault)` | something is wrong with what it holds (a form's field at fault): libcosmic's single error border in every state, keeping the normal light fill (rule 25a and Juliet's 13 Nov correction); the app says what is wrong where it says it |
+| `.accepts(fn(char) -> bool)` | only those characters are typed: a key or an input method's text with another is not given to the input (a host takes no space, a number no letter), whatever the keys' timing; what is pasted is the app's to filter |
 
 The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short, on_action))` for its menu with Undo · Redo, as a text box's editor is; a password's has no history to offer.
 

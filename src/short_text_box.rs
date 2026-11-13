@@ -64,6 +64,8 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use zeroize::Zeroize;
+
 use cosmic::iced::advanced::layout::{self, Layout};
 use cosmic::iced::advanced::renderer;
 use cosmic::iced::advanced::widget::{Id, Operation, Tree, Widget, tree};
@@ -134,7 +136,7 @@ pub struct Edit {
     pub(crate) before: Span,
     pub(crate) after: Span,
     pub(crate) by: By,
-    /// A password's: its value is not written out
+    /// A password's or a sensitive box's: its value is not written out
     pub(crate) hidden: bool,
 }
 
@@ -166,10 +168,16 @@ pub enum Action {
 
 /// A field's whole state, to go back to
 #[doc(hidden)]
-#[derive(Debug)]
 pub struct Line {
     text: String,
     span: Span,
+}
+
+impl Line {
+    /// Its text zeroized: a sensitive box's history lets go of it
+    fn wipe(&mut self) {
+        self.text.zeroize();
+    }
 }
 
 /// Each request to put the caret somewhere is newer than the last, so that
@@ -182,6 +190,14 @@ static REQUESTS: AtomicU64 = AtomicU64::new(1);
 /// [`Undoable::replace_with`], or a new box
 /// ([`starting_with`](Self::starting_with)). `P` is the app's own part of
 /// a step, as [`crate::TextBox`]'s.
+///
+/// A sensitive box ([`sensitive`](Self::sensitive)) is a box for values
+/// that are not secrets but must not linger (a card's name and expiry): its
+/// Undo and Redo are as ever, but nothing of it stays in memory it lets go
+/// of. The value it replaces, and the copy an edit brought once taken in,
+/// are zeroized; its history zeroizes each step it lets go of and all it
+/// holds when dropped; dropping it zeroizes its value; `Debug` writes none
+/// of it, nor do its field's edits
 pub struct ShortTextBox<P = ()> {
     value: String,
     /// Where the caret was after the last change the box knows of
@@ -193,11 +209,14 @@ pub struct ShortTextBox<P = ()> {
 
 impl<P> Default for ShortTextBox<P> {
     fn default() -> Self {
-        Self {
-            value: String::new(),
-            span: Span::default(),
-            history: History::default(),
-            put: None,
+        Self::with_history(String::new(), Span::default(), History::default())
+    }
+}
+
+impl<P> Drop for ShortTextBox<P> {
+    fn drop(&mut self) {
+        if self.history.is_sensitive() {
+            self.value.zeroize();
         }
     }
 }
@@ -212,10 +231,25 @@ impl<P> Deref for ShortTextBox<P> {
 
 impl<P> std::fmt::Debug for ShortTextBox<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value: &dyn std::fmt::Debug = match self.history.is_sensitive() {
+            true => &"(hidden)",
+            false => &self.value,
+        };
         f.debug_struct("ShortTextBox")
-            .field("value", &self.value)
+            .field("value", value)
             .field("history", &self.history.len())
             .finish()
+    }
+}
+
+impl<P> ShortTextBox<P> {
+    fn with_history(value: String, span: Span, history: History<Line, P>) -> Self {
+        Self {
+            value,
+            span,
+            history,
+            put: None,
+        }
     }
 }
 
@@ -228,11 +262,26 @@ impl<P: Clone> ShortTextBox<P> {
     /// A box starting with `text`, with nothing to undo: where the field
     /// starts, not a change to it
     pub fn starting_with(text: &str) -> Self {
-        Self {
-            value: text.to_string(),
-            span: Span::at(Value::new(text).len()),
-            ..Self::default()
-        }
+        Self::with_history(
+            text.to_string(),
+            Span::at(Value::new(text).len()),
+            History::default(),
+        )
+    }
+
+    /// An empty sensitive box (see the type's description), with nothing to
+    /// undo
+    pub fn sensitive() -> Self {
+        Self::with_history(
+            String::new(),
+            Span::default(),
+            History::sensitive(Line::wipe),
+        )
+    }
+
+    /// Whether it is a sensitive box
+    pub fn is_sensitive(&self) -> bool {
+        self.history.is_sensitive()
     }
 
     /// The value
@@ -278,6 +327,7 @@ impl<P: Clone> ShortTextBox<P> {
             // A key that changed nothing (Backspace at the start) is no run
             self.span = after;
             self.history.end_run();
+            self.let_go(value);
             return;
         }
         // The caret moved since the last edit: the run going on has ended
@@ -297,8 +347,21 @@ impl<P: Clone> ShortTextBox<P> {
             self.history
                 .record(Line { text, span: before }, bytes, part);
         }
-        self.value = value;
+        self.take_value(value);
         self.span = after;
+    }
+
+    /// `value` in place of the value: what it replaces let go of
+    fn take_value(&mut self, value: String) {
+        let old = std::mem::replace(&mut self.value, value);
+        self.let_go(old);
+    }
+
+    /// `text` let go of: zeroized, if the box is sensitive
+    fn let_go(&self, mut text: String) {
+        if self.history.is_sensitive() {
+            text.zeroize();
+        }
     }
 
     /// The caret is to go to `span`: the field puts it there when next built
@@ -332,13 +395,13 @@ impl<P: Clone> Undoable for ShortTextBox<P> {
         (line, self.value.len())
     }
 
-    fn restore(&mut self, line: Line) {
-        self.value = line.text;
+    fn restore(&mut self, mut line: Line) {
+        self.take_value(std::mem::take(&mut line.text));
         self.put(line.span);
     }
 
     fn set(&mut self, text: &str, caret: Caret) {
-        self.value = text.to_string();
+        self.take_value(text.to_string());
         self.put(span_for(text, caret));
         self.history.end_run();
     }
@@ -372,7 +435,13 @@ fn request(span: Span) -> (u64, Span) {
 /// into it is kept for Undo, as in GTK, and nothing of it is written out by
 /// `Debug`. Only [`secure`] shows it, and `secure` shows nothing else, so
 /// a password cannot be shown in a plain field, nor a plain box keep a
-/// password's history
+/// password's history.
+///
+/// Nothing of a password stays behind in memory the box lets go of: each
+/// change zeroizes the value it replaces, in its own buffer, and the copy
+/// the change brought once it is taken in; dropping the box zeroizes its
+/// value; [`take`](Self::take) hands the value over and leaves the box
+/// empty
 #[derive(Default)]
 pub struct PasswordBox {
     value: String,
@@ -394,7 +463,7 @@ impl PasswordBox {
     /// nothing, there being no history
     pub fn perform(&mut self, action: Action) {
         match action {
-            Action::Edit(edit) => self.value = edit.value,
+            Action::Edit(edit) => replace_zeroized(&mut self.value, edit.value),
             Action::Undo | Action::Redo => {}
         }
     }
@@ -402,9 +471,43 @@ impl PasswordBox {
     /// The value set by the app (a password cleared once used), the caret
     /// at `caret`
     pub fn set(&mut self, text: &str, caret: Caret) {
-        self.value = text.to_string();
+        self.value.zeroize();
+        self.value.push_str(text);
         self.put = Some(request(span_for(text, caret)));
     }
+
+    /// The value, handed over (to what checks it): the box is empty again,
+    /// keeping nothing of it, and the field's caret goes to its start
+    pub fn take(&mut self) -> String {
+        self.put = Some(request(Span::at(0)));
+        std::mem::take(&mut self.value)
+    }
+
+    /// The whole of the value's buffer, its spare capacity too, for the
+    /// tests of what a change leaves in it; only once a change has
+    /// zeroized the buffer is all of it written
+    #[cfg(test)]
+    pub(crate) fn buffer(&self) -> &[u8] {
+        // SAFETY: the pointer and capacity are the String's own allocation;
+        // the tests call this only after a change zeroized the whole
+        // capacity (`replace_zeroized`, `set`), so every byte of it is written
+        unsafe { std::slice::from_raw_parts(self.value.as_ptr(), self.value.capacity()) }
+    }
+}
+
+impl Drop for PasswordBox {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+
+/// `slot` holds `new` in place of what it held: what it held is zeroized
+/// first, the whole of its buffer, so that growing it leaves zeros behind;
+/// then `new` is copied in and its own buffer zeroized
+fn replace_zeroized(slot: &mut String, mut new: String) {
+    slot.zeroize();
+    slot.push_str(&new);
+    new.zeroize();
 }
 
 impl Deref for PasswordBox {
@@ -441,19 +544,22 @@ fn field_style(
     base: Rc<cosmic::theme::TextInput>,
     look: Look,
     editable: bool,
+    invalid: bool,
 ) -> cosmic::theme::TextInput {
     let style = move || base.clone();
     let (active, error, hovered, focused, disabled) = (style(), style(), style(), style(), style());
-    let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| {
-        field_look(theme, base, look, state, editable)
+    // An error keeps libcosmic's single border and the normal light fill.
+    let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| match invalid {
+        true => field_error(theme, base),
+        false => field_look(theme, base, look, state, editable),
     };
     cosmic::theme::TextInput::Custom {
         active: Box::new(move |theme| looks(theme, &active, State::Rest)),
         // An input in its error state is drawn so, even as focused: a kept
         // selection in it takes the kept colours there
         error: Box::new(move |theme| match kept::drawing() {
-            Some(_) => kept_colours(theme, theme.error(&error)),
-            None => theme.error(&error),
+            Some(_) => kept_colours(theme, field_error(theme, &error)),
+            None => field_error(theme, &error),
         }),
         hovered: Box::new(move |theme| looks(theme, &hovered, State::Hovered)),
         focused: Box::new(move |theme| match kept::drawing() {
@@ -465,6 +571,15 @@ fn field_style(
         }),
         disabled: Box::new(move |theme| theme.disabled(&disabled)),
     }
+}
+
+/// Juliet, 13 Nov 2026: error cases should use "the light background or a
+/// red tint", rather than falling back to the surrounding grey surface.
+/// Keep the normal fill and libcosmic's error border and text colours.
+fn field_error(theme: &Theme, base: &cosmic::theme::TextInput) -> Appearance {
+    let mut appearance = theme.error(base);
+    appearance.background = crate::look::background(theme);
+    appearance
 }
 
 /// libcosmic's look of `base` in `state`, on the page's colour and with the
@@ -519,14 +634,22 @@ pub struct Field<'a, M> {
     editable: bool,
     /// What the input's overlays publish, made when they are asked for
     overlay_map: Option<Box<dyn Fn(Change<M>) -> M + 'a>>,
+    /// The characters it takes as they are typed, if not all
+    accepts: Option<fn(char) -> bool>,
+    /// Its kind of box and whether its window is behind others
+    look: Look,
+    /// Something is wrong with what it holds: an error border on the light fill
+    invalid: bool,
 }
 
 /// The app's messages for what a field's input says
 struct Messages<'a, M> {
     on_action: Rc<dyn Fn(Action) -> M + 'a>,
     on_paste: Option<Rc<dyn Fn(String) -> M + 'a>>,
-    /// A password's: what is typed is not written out
+    /// A password's: it has no history to undo or redo
     hidden: bool,
+    /// A password's or a sensitive box's: what is typed is not written out
+    redacted: bool,
 }
 
 impl<M> Clone for Messages<'_, M> {
@@ -535,6 +658,7 @@ impl<M> Clone for Messages<'_, M> {
             on_action: self.on_action.clone(),
             on_paste: self.on_paste.clone(),
             hidden: self.hidden,
+            redacted: self.redacted,
         }
     }
 }
@@ -560,7 +684,7 @@ impl<M> Messages<'_, M> {
                 before,
                 after,
                 by,
-                hidden: self.hidden,
+                hidden: self.redacted,
             }))
         };
         match change {
@@ -590,7 +714,7 @@ pub fn text<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Default,
         false,
-        (text_box.put, false),
+        (text_box.put, false, text_box.is_sensitive()),
         on_action,
     )
 }
@@ -607,7 +731,7 @@ pub fn search<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Search,
         false,
-        (text_box.put, false),
+        (text_box.put, false, text_box.is_sensitive()),
         on_action,
     )
 }
@@ -624,7 +748,7 @@ pub fn inline<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Inline,
         false,
-        (text_box.put, false),
+        (text_box.put, false, text_box.is_sensitive()),
         on_action,
     )
 }
@@ -649,7 +773,7 @@ pub fn editable<'a, P: Clone, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::EditableText,
         true,
-        (text_box.put, false),
+        (text_box.put, false, text_box.is_sensitive()),
         on_action,
     )
 }
@@ -674,19 +798,41 @@ pub fn secure<'a, M: Clone + 'static>(
         input,
         cosmic::theme::TextInput::Default,
         false,
-        (text_box.put, true),
+        (text_box.put, true, true),
+        on_action,
+    )
+}
+
+/// A password's box shown as a plain one-line field, drawn as [`text`]
+/// draws one: a secret the person must see as it is typed, which is kept as
+/// a password is (no history, nothing of it written out, zeroized as it
+/// goes): a password generated for them, a page's prompt answered. To
+/// mask it, or show it on request, use [`secure`]
+pub fn shown<'a, M: Clone + 'static>(
+    text_box: &'a PasswordBox,
+    placeholder: impl Into<Cow<'a, str>>,
+    on_action: impl Fn(Action) -> M + 'a,
+) -> Field<'a, M> {
+    let input = text_input::text_input(placeholder, text_box.value.as_str());
+    Field::new(
+        input,
+        cosmic::theme::TextInput::Default,
+        false,
+        (text_box.put, true, true),
         on_action,
     )
 }
 
 impl<'a, M: Clone + 'static> Field<'a, M> {
     /// A field over libcosmic's `input` of the kind drawn in `base`; `put`,
-    /// where its box asks for the caret, and whether it is a password's
+    /// where its box asks for the caret, whether it is a password's, and
+    /// whether what is typed is not to be written out (a password's, a
+    /// sensitive box's)
     fn new(
         input: TextInput<'a, Change<M>>,
         base: cosmic::theme::TextInput,
         editable: bool,
-        (put, hidden): (Option<(u64, Span)>, bool),
+        (put, hidden, redacted): (Option<(u64, Span)>, bool, bool),
         on_action: impl Fn(Action) -> M + 'a,
     ) -> Self {
         let base = Rc::new(base);
@@ -694,28 +840,57 @@ impl<'a, M: Clone + 'static> Field<'a, M> {
             input: input
                 .on_input(Change::Input)
                 .on_paste(Change::Pasted)
-                .style(field_style(base.clone(), Look::normal(), editable)),
+                .style(field_style(base.clone(), Look::normal(), editable, false)),
             messages: Messages {
                 on_action: Rc::new(on_action),
                 on_paste: None,
                 hidden,
+                redacted,
             },
             put,
             base,
             editable,
             overlay_map: None,
+            accepts: None,
+            look: Look::normal(),
+            invalid: false,
         }
+    }
+
+    /// Something is wrong with what it holds (a form's field at fault):
+    /// drawn with libcosmic's single error border and the normal light
+    /// fill, in every state, in place of the household border (rule 25a:
+    /// "error borders keep libcosmic's"; Juliet's 13 Nov fill correction). The app says
+    /// what is wrong where it says it, as libcosmic's own `error` would
+    /// write it under the field
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self.restyle()
+    }
+
+    /// The input's style, as the field's look and state are now
+    fn restyle(self) -> Self {
+        let style = field_style(self.base.clone(), self.look, self.editable, self.invalid);
+        self.with(|input| input.style(style))
+    }
+
+    /// Only the characters `accepts` takes are typed: a key or an input
+    /// method's text with another is not given to the input at all (a host
+    /// takes no space, a number no letter). The input edits a copy of its
+    /// value as each key comes, before the app answers, so a filter the app
+    /// applies afterwards is too late for the keys already come; this one is
+    /// before them, whatever their timing. What is pasted is the app's to
+    /// filter, as it is given whole
+    pub fn accepts(mut self, accepts: fn(char) -> bool) -> Self {
+        self.accepts = Some(accepts);
+        self
     }
 
     /// Whether the field's window is behind others: its focused border is
     /// then the rest colour (rule 25a, a normal text box)
-    pub fn behind(self, behind: bool) -> Self {
-        let style = field_style(
-            self.base.clone(),
-            Look::normal().behind(behind),
-            self.editable,
-        );
-        self.with(|input| input.style(style))
+    pub fn behind(mut self, behind: bool) -> Self {
+        self.look = Look::normal().behind(behind);
+        self.restyle()
     }
 
     /// libcosmic's input, changed by `change`
@@ -859,6 +1034,20 @@ fn span_in(cursor: cursor::Cursor, value: &Value) -> Span {
             anchor: start,
             caret: end,
         },
+    }
+}
+
+/// The text an event types: a key's with no Ctrl, Alt or Super held, or
+/// what an input method commits
+fn typed_text(event: &Event) -> Option<&str> {
+    match event {
+        Event::InputMethod(input_method::Event::Commit(text)) => Some(text),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            text: Some(text),
+            modifiers,
+            ..
+        }) if !(modifiers.control() || modifiers.alt() || modifiers.logo()) => Some(text),
+        _ => None,
     }
 }
 
@@ -1069,6 +1258,15 @@ impl<'a, M: Clone + 'static> Widget<M, Theme, Renderer> for Field<'a, M> {
                 };
                 shell.publish((self.messages.on_action)(action));
             }
+            shell.capture_event();
+            return;
+        }
+        // A character the field does not take, typed: not given to the input
+        if focused
+            && let Some(accepts) = self.accepts
+            && let Some(text) = typed_text(event)
+            && text.chars().any(|c| !c.is_control() && !accepts(c))
+        {
             shell.capture_event();
             return;
         }
