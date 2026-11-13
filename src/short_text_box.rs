@@ -548,9 +548,9 @@ fn field_style(
 ) -> cosmic::theme::TextInput {
     let style = move || base.clone();
     let (active, error, hovered, focused, disabled) = (style(), style(), style(), style(), style());
-    // (a field at fault: libcosmic's error look in every state, one border)
+    // An error keeps libcosmic's single border and the normal light fill.
     let looks = move |theme: &Theme, base: &cosmic::theme::TextInput, state| match invalid {
-        true => theme.error(base),
+        true => field_error(theme, base),
         false => field_look(theme, base, look, state, editable),
     };
     cosmic::theme::TextInput::Custom {
@@ -558,8 +558,8 @@ fn field_style(
         // An input in its error state is drawn so, even as focused: a kept
         // selection in it takes the kept colours there
         error: Box::new(move |theme| match kept::drawing() {
-            Some(_) => kept_colours(theme, theme.error(&error)),
-            None => theme.error(&error),
+            Some(_) => kept_colours(theme, field_error(theme, &error)),
+            None => field_error(theme, &error),
         }),
         hovered: Box::new(move |theme| looks(theme, &hovered, State::Hovered)),
         focused: Box::new(move |theme| match kept::drawing() {
@@ -571,6 +571,15 @@ fn field_style(
         }),
         disabled: Box::new(move |theme| theme.disabled(&disabled)),
     }
+}
+
+/// Juliet, 13 Nov 2026: error cases should use "the light background or a
+/// red tint", rather than falling back to the surrounding grey surface.
+/// Keep the normal fill and libcosmic's error border and text colours.
+fn field_error(theme: &Theme, base: &cosmic::theme::TextInput) -> Appearance {
+    let mut appearance = theme.error(base);
+    appearance.background = crate::look::background(theme);
+    appearance
 }
 
 /// libcosmic's look of `base` in `state`, on the page's colour and with the
@@ -629,7 +638,7 @@ pub struct Field<'a, M> {
     accepts: Option<fn(char) -> bool>,
     /// Its kind of box and whether its window is behind others
     look: Look,
-    /// Something is wrong with what it holds: libcosmic's error look
+    /// Something is wrong with what it holds: an error border on the light fill
     invalid: bool,
 }
 
@@ -849,9 +858,9 @@ impl<'a, M: Clone + 'static> Field<'a, M> {
     }
 
     /// Something is wrong with what it holds (a form's field at fault):
-    /// drawn in libcosmic's error look, its one border the error colour
-    /// and its fill libcosmic's, in every state, in place of the household
-    /// border (rule 25a: "error borders keep libcosmic's"). The app says
+    /// drawn with libcosmic's single error border and the normal light
+    /// fill, in every state, in place of the household border (rule 25a:
+    /// "error borders keep libcosmic's"; Juliet's 13 Nov fill correction). The app says
     /// what is wrong where it says it, as libcosmic's own `error` would
     /// write it under the field
     pub fn invalid(mut self, invalid: bool) -> Self {

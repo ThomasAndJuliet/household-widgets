@@ -402,67 +402,79 @@ fn a_field_refuses_what_it_does_not_take_however_fast_it_comes() {
     }
 }
 
-/// A field at fault is drawn in libcosmic's error look, in place of the
-/// household border: one border, libcosmic's error colour, its error fill,
-/// at rest and with the keys (rule 25a: "error borders keep libcosmic's")
+/// An error keeps the normal box's light fill in both themes (Juliet,
+/// 13 Nov: "It should either use the light background or a red tint").
+/// The border is still libcosmic's single error border, in each state,
+/// whether the app marks the field invalid or supplies an error message.
 #[test]
-fn a_field_at_fault_has_libcosmics_error_look_and_one_border() {
-    let theme = theme();
+fn a_field_at_fault_keeps_the_light_fill_and_one_error_border() {
     let short: ShortTextBox = ShortTextBox::starting_with("one");
-    let error = rgb8(theme.cosmic().destructive_color().into());
-    let rest = rgb8(
-        Look::normal()
-            .border(&theme, crate::look::State::Rest)
-            .color,
-    );
-    let ring = rgb8(
-        Look::normal()
-            .border(&theme, crate::look::State::Focused)
-            .color,
-    );
     let inside = Point::new(IN_FIELD.x + 60.0, IN_FIELD.y);
-    for focused in [false, true] {
-        let mut window = Window::new();
-        if focused {
-            let _ = window.send(field(&short).invalid(true), &click(IN_FIELD));
-        }
-        let shot = window.shot(field(&short).invalid(true), &theme);
-        // libcosmic's own input in its error state, for what its look is
-        let mut libcosmic = Window::new();
-        let input = || {
-            widget::text_input("", "one")
-                .on_input(|_| Message::Submit)
-                .error("")
-        };
-        if focused {
-            let _ = libcosmic.send(input(), &click(IN_FIELD));
-        }
-        let expected = libcosmic.shot(input(), &theme);
-        let all = 0..WINDOW.height as usize;
-        let border = shot.count_in(all.clone(), error);
-        assert!(
-            border > 20,
-            "the error colour's border ({focused}): {border}"
+    for (theme, fill) in [
+        (Theme::light(), [235, 235, 235]),
+        (Theme::dark(), [27, 27, 27]),
+    ] {
+        let error = rgb8(theme.cosmic().destructive_color().into());
+        let rest = rgb8(
+            Look::normal()
+                .border(&theme, crate::look::State::Rest)
+                .color,
         );
-        assert_eq!(
-            border,
-            expected.count_in(all.clone(), error),
-            "the one border libcosmic draws ({focused})"
+        let ring = rgb8(
+            Look::normal()
+                .border(&theme, crate::look::State::Focused)
+                .color,
         );
-        // (no household border beside it: no more of its colours than
-        // libcosmic's own error input draws)
-        for (colour, what) in [(rest, "rest border"), (ring, "focus ring")] {
-            assert_eq!(
-                shot.count_in(all.clone(), colour),
-                expected.count_in(all.clone(), colour),
-                "no household {what} beside it ({focused})"
-            );
+        for native_error in [false, true] {
+            let view = || {
+                if native_error {
+                    field(&short).error("")
+                } else {
+                    field(&short).invalid(true)
+                }
+            };
+            for state in ["rest", "hovered", "focused"] {
+                let mut window = Window::new();
+                let mut libcosmic = Window::new();
+                let input = || {
+                    widget::text_input("", "one")
+                        .on_input(|_| Message::Submit)
+                        .error("")
+                };
+                if state == "focused" {
+                    let _ = window.send(view(), &click(IN_FIELD));
+                    let _ = libcosmic.send(input(), &click(IN_FIELD));
+                }
+                let pointer = if state == "hovered" { IN_FIELD } else { BELOW };
+                let shot = window.shot_at(view(), &theme, pointer);
+                let expected = libcosmic.shot_at(input(), &theme, pointer);
+                let all = 0..WINDOW.height as usize;
+                let border = shot.count_in(all.clone(), error);
+                assert!(
+                    border > 20,
+                    "the error border ({state}, {native_error}): {border}"
+                );
+                assert_eq!(
+                    border,
+                    expected.count_in(all.clone(), error),
+                    "one native error border ({state}, {native_error})"
+                );
+                for (colour, what) in [(rest, "rest border"), (ring, "focus ring")] {
+                    // Changing the fill changes antialiasing at the corners
+                    // and text edges; allow those few pixels, not another ring.
+                    assert!(
+                        shot.count_in(all.clone(), colour)
+                            <= expected.count_in(all.clone(), colour) + 16,
+                        "no household {what} beside the error border ({state}, {native_error})"
+                    );
+                }
+                assert_eq!(
+                    shot.at(inside),
+                    fill,
+                    "the normal light field fill, including in error ({state}, {native_error})"
+                );
+            }
         }
-        assert_eq!(
-            shot.at(inside),
-            expected.at(inside),
-            "libcosmic's error fill ({focused})"
-        );
     }
 }
 

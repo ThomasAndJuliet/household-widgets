@@ -258,7 +258,7 @@ Whether a window is behind others is the app's to say, per box, as it builds tha
 | `short_text_box::inline(..)`, `short_text_box::editable(.., editing, on_toggle_edit)` | as `inline_input` and `editable_input` |
 | `.on_submit(m)`, `.on_clear(m)`, `.on_focus(m)`, `.on_unfocus(m)`, `.on_tab(m)`, `.on_paste(f)`, `.id`, `.width`, `.padding`, `.size`, `.font`, `.label`, `.helper_text`, `.error`, `.select_on_focus`, `.leading_icon`, `.trailing_icon` | on the field, passed on to libcosmic's input with the app's own messages; `.on_paste` is told after the box's own edit |
 | `.behind(window_behind)` | the field's window is behind others: its focused border is the rest colour |
-| `.invalid(at_fault)` | something is wrong with what it holds (a form's field at fault): libcosmic's error look in every state, its one border the error colour and its fill libcosmic's, in place of the household border (rule 25a); the app says what is wrong where it says it |
+| `.invalid(at_fault)` | something is wrong with what it holds (a form's field at fault): libcosmic's single error border in every state, keeping the normal light fill (rule 25a and Juliet's 13 Nov correction); the app says what is wrong where it says it |
 | `.accepts(fn(char) -> bool)` | only those characters are typed: a key or an input method's text with another is not given to the input (a host takes no space, a number no letter), whatever the keys' timing; what is pasted is the app's to filter |
 
 The field is `text_menu(field, &words, style).history(TextMenuHistory::of(&short, on_action))` for its menu with Undo · Redo, as a text box's editor is; a password's has no history to offer.
