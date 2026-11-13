@@ -2,6 +2,10 @@
 //! Accepted section regions and history-independent viewing decisions.
 use super::*;
 use std::any::Any;
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Stable identities are supplied by the containing interface.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -441,24 +445,38 @@ impl Destination {
 /// Navigation associations are separate from focus and the active path.
 #[derive(Default, Debug)]
 pub struct NavigationState {
-    generation: u64,
+    generation: Arc<AtomicU64>,
     destination: Option<Destination>,
 }
 impl NavigationState {
     pub fn request(&mut self, destination: RegionId) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
+        let generation = self
+            .generation
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         self.destination = Some(Destination::Pending(destination));
-        self.generation
+        generation
     }
     pub fn browse(&mut self) {
         self.cancel();
     }
     pub fn cancel(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.destination = None;
     }
     pub fn is_current_request(&self, generation: u64) -> bool {
-        self.destination.is_some() && self.generation == generation
+        self.destination.is_some() && self.generation.load(Ordering::Relaxed) == generation
+    }
+    /// A queued reveal can verify that its request still owns navigation.
+    pub fn token(&self, generation: u64) -> NavigationToken {
+        NavigationToken {
+            generation,
+            current: if self.is_current_request(generation) {
+                Arc::downgrade(&self.generation)
+            } else {
+                Weak::new()
+            },
+        }
     }
     pub fn retain_valid(&mut self, valid: impl FnOnce(RegionId) -> bool) {
         if self.destination.is_some_and(|d| !valid(d.id())) {
@@ -495,6 +513,20 @@ impl NavigationState {
     }
 }
 
+/// A queued request expires on replacement, cancellation or owner drop.
+#[derive(Clone, Debug)]
+pub struct NavigationToken {
+    generation: u64,
+    current: Weak<AtomicU64>,
+}
+impl NavigationToken {
+    pub fn is_current(&self) -> bool {
+        self.current
+            .upgrade()
+            .is_some_and(|current| current.load(Ordering::Relaxed) == self.generation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +545,27 @@ mod tests {
             introduction: intro,
         }
     }
+    #[test]
+    fn reveal_token_expires_on_browsing_replacement_and_owner_drop() {
+        let mut state = NavigationState::default();
+        assert!(!state.token(0).is_current());
+        let generation = state.request(RegionId(1));
+        assert!(!state.token(generation.wrapping_add(1)).is_current());
+        let browsed = state.token(generation);
+        assert!(browsed.is_current());
+        state.browse();
+        assert!(!browsed.is_current());
+        assert!(!state.token(generation.wrapping_add(1)).is_current());
+        let generation = state.request(RegionId(1));
+        let replaced = state.token(generation);
+        let generation = state.request(RegionId(2));
+        assert!(!replaced.is_current());
+        let dropped = state.token(generation);
+        assert!(dropped.is_current());
+        drop(state);
+        assert!(!dropped.is_current());
+    }
+
     #[test]
     fn midpoint_and_full_introduction_are_both_required() {
         let sections = [
