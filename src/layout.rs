@@ -21,8 +21,11 @@ use std::sync::Arc;
 mod frame;
 #[path = "layout_information.rs"]
 mod information;
+#[path = "layout_navigation.rs"]
+mod navigation;
 use frame::Frame;
 pub use frame::framed_child;
+pub use navigation::*;
 #[path = "layout_presentation.rs"]
 mod presentation;
 pub use information::{
@@ -327,6 +330,7 @@ pub struct Child<'a, Message> {
     preparation: PreparedId,
     presentation: Option<Presentation>,
     information: Option<SourceInformation<'a>>,
+    regions: Vec<Region>,
 }
 
 impl<Message> Clone for Child<'_, Message> {
@@ -346,6 +350,7 @@ impl<Message> Clone for Child<'_, Message> {
             preparation: self.preparation.clone(),
             presentation: self.presentation,
             information: self.information.clone(),
+            regions: self.regions.clone(),
         }
     }
 }
@@ -376,6 +381,14 @@ impl<'a, Message: 'a> Child<'a, Message> {
             revision,
             report: Rc::new(report),
         });
+        self.refresh_preparation();
+        self
+    }
+
+    /// Name an accepted native box for section navigation. Multiple roles may
+    /// describe the same box. Rebuilding refreshes the preparation identity.
+    pub fn report_region(mut self, region: Region) -> Self {
+        self.regions.push(region);
         self.refresh_preparation();
         self
     }
@@ -621,6 +634,11 @@ impl<'a, Message: 'a> Child<'a, Message> {
                     .filter(|report| report.owner == self.preparation)
                     .cloned()
                     .collect()
+            } else {
+                Vec::new()
+            },
+            regions: if binding_matches && !plan.hidden {
+                self.regions.clone()
             } else {
                 Vec::new()
             },
@@ -926,6 +944,7 @@ pub fn child<'a, Message: 'a>(
         preparation: PreparedId::new(),
         presentation: None,
         information: None,
+        regions: Vec::new(),
     }
 }
 
@@ -962,6 +981,7 @@ pub fn forms<'a, Message: 'a>(
         preparation: PreparedId::new(),
         presentation: None,
         information: None,
+        regions: Vec::new(),
     }
 }
 
@@ -1119,6 +1139,7 @@ fn compose<'a, Message: 'a>(
         preparation: PreparedId::new(),
         presentation: None,
         information: None,
+        regions: Vec::new(),
     }
 }
 

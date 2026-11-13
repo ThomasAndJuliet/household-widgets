@@ -265,6 +265,43 @@ accepted source facts into the live popup registry, available through
 Status, independently useful previews and intentionally summarised information
 are not automatically compaction losses.
 
+Section navigation uses separate typed layout regions: `Region` declares a
+stable identity, source revision, role and associations; `Child::report_region` or
+`region_marker` attaches it to measured native content. `RegionReports` keeps
+full window-space bounds after scrolling. Its `snapshot(revision)` validates
+identities, ordering and associations, intersects declared viewport clips, and
+combines explicitly marked headers and introductions. Different nested clip
+chains currently return `UnsupportedClips`; missing introductions remain unknown.
+They are never inferred from a widget's private child positions or text heights.
+
+Wrap a complete reporting surface in `observe_regions` to receive changed
+accepted geometry after initial layout, resizing, filtering and scrolling.
+Repeated identical redraws emit nothing; invalidated layouts await a subsequent
+redraw. Validate the source revision, then call `NavigationState::reconcile` once
+on the complete snapshot before querying each column's current section. Requests
+waiting to appear are distinct from destinations already visible; a destination
+that leaves view cannot revive after later reflow. The consumer must explicitly
+discard requests whose content was removed or became unreachable.
+
+`scroll_intent::vertical` wraps a native scrollable to report deliberate vertical
+wheel attempts, even at a boundary without offset movement, and native scrollbar
+interaction. Events captured by nested children do not become page browsing.
+It forwards accessibility and existing native scrolling behavior; touch,
+keyboard browsing and general interaction ownership are not supplied by this
+observer. Geometry reporting itself never implies user browsing.
+
+`navigation_style::NavigationButton` pairs native button interaction with the
+fixed-section navigation presentation and keyboard-target contour. Consumers
+supply semantic content and current state, choosing `Prominent` for orienting
+panel navigation or `NonProminent` for Settings-style navigation. Text labels
+use semibold; this component is distinct from content tabs and quick-access
+toggles. Neutral hover replaces the neutral current wash. The target contour
+resolves contrast against the displayed solid fill and its state overlay, and
+uses adjacent white/dark strokes where required. `TARGET_FOOTPRINT` reserves
+the same outer space in every state and is available to consumer measurements.
+This presentation adapter does not supply general interaction ancestry or the
+complete keyboard navigation/window-return policy.
+
 `hover_card::text_box` prepares wrapping text with normal/emphasised concise
 presentations; `text_box_with` preserves application typography.
 `normal_text_box_with` adapts an existing normal-only renderer explicitly.

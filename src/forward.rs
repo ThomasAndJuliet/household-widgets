@@ -28,6 +28,22 @@ macro_rules! forward_widget {
                 self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
             }
     };
+    (@hook $message:ty, $theme:ty, $renderer:ty; size_hint) => {
+        fn size_hint(&self) -> Size<Length> {
+            self.content.as_widget().size_hint()
+        }
+    };
+    (@hook $message:ty, $theme:ty, $renderer:ty; a11y_nodes) => {
+        #[cfg(feature = "a11y")]
+        fn a11y_nodes(
+            &self,
+            layout: Layout<'_>,
+            tree: &Tree,
+            cursor: mouse::Cursor,
+        ) -> iced_accessibility::A11yTree {
+            self.content.as_widget().a11y_nodes(layout, &tree.children[0], cursor)
+        }
+    };
     (@hook $message:ty, $theme:ty, $renderer:ty; update) => {
         fn update(
                 &mut self,
