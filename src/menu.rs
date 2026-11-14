@@ -10,8 +10,8 @@ use cosmic::iced::{Font, Length};
 use cosmic::widget::{self, icon, menu::key_bind::KeyBind};
 use cosmic::{Element, theme};
 
-const ICON: f32 = 14.0;
-const MARK: f32 = 16.0;
+/// The minimum canvas for menu icons, marks and submenu indicators.
+pub const ICON_SIZE: f32 = 16.0;
 const PADDING: f32 = 16.0;
 pub const MENU_MIN_WIDTH: u16 = 240;
 
@@ -211,7 +211,7 @@ pub struct MenuRow {
 impl MenuRow {
     pub fn label_indent(reserve_mark: bool) -> f32 {
         let space = f32::from(theme::spacing().space_xxs);
-        ICON + space + if reserve_mark { MARK + space } else { 0.0 }
+        ICON_SIZE + space + if reserve_mark { ICON_SIZE + space } else { 0.0 }
     }
 
     pub fn width(&self) -> f32 {
@@ -222,7 +222,7 @@ impl MenuRow {
         };
         let label = measured_width(&self.label, 14.0, font);
         let trailing = if self.folder {
-            MARK
+            ICON_SIZE
         } else {
             measured_width(&self.shortcut, 14.0, cosmic::font::default())
         };
@@ -420,16 +420,16 @@ impl MenuRow {
         let mut row = Vec::with_capacity(7);
         if marks {
             row.push(match mark {
-                Some(handle) => widget::icon::icon(handle).size(MARK as u16).into(),
+                Some(handle) => widget::icon::icon(handle).size(ICON_SIZE as u16).into(),
                 None => widget::space::horizontal()
-                    .width(Length::Fixed(MARK))
+                    .width(Length::Fixed(ICON_SIZE))
                     .into(),
             });
             row.push(widget::space::horizontal().width(space).into());
         }
         row.push(match icon {
             Some(handle) => {
-                let mut icon = widget::icon::icon(handle).size(ICON as u16);
+                let mut icon = widget::icon::icon(handle).size(ICON_SIZE as u16);
                 if destructive {
                     icon = icon.class(theme::Svg::Custom(std::rc::Rc::new(|theme| {
                         cosmic::iced::widget::svg::Style {
@@ -440,7 +440,7 @@ impl MenuRow {
                 icon.into()
             }
             None => widget::space::horizontal()
-                .width(Length::Fixed(ICON))
+                .width(Length::Fixed(ICON_SIZE))
                 .into(),
         });
         row.push(widget::space::horizontal().width(space).into());
@@ -465,7 +465,7 @@ impl MenuRow {
         if folder {
             row.push(
                 widget::icon::icon(resolve("pan-end-symbolic"))
-                    .size(16)
+                    .size(ICON_SIZE as u16)
                     .into(),
             );
         } else {
@@ -565,6 +565,45 @@ mod tests {
             assert_eq!(measured_width(text, 14.0, font), small);
             assert_eq!(measured_width("", 20.0, font), 0.0);
         }
+    }
+
+    #[test]
+    fn native_menu_row_reserves_sixteen_pixel_icon_canvases() {
+        use cosmic::iced::advanced::{Widget, layout, renderer::Headless, widget::Tree};
+        use cosmic::iced::{Font, Pixels, Size};
+        fn icon(name: &'static str) -> icon::Handle {
+            widget::icon::from_name(name).handle()
+        }
+        let renderer = cosmic::iced::futures::executor::block_on(
+            <cosmic::Renderer as Headless>::new(Font::default(), Pixels(14.0), Some("tiny-skia")),
+        )
+        .expect("headless renderer");
+        let row = MenuRow {
+            reserve_mark: true,
+            mark: Some(icon("object-select-symbolic")),
+            icon: Some(icon("preferences-color-symbolic")),
+            label: "Appearance".into(),
+            shortcut: String::new(),
+            destructive: false,
+            selected: false,
+            folder: true,
+        };
+        let mut widget = widget::row::with_children(row.contents::<()>(icon));
+        let mut tree = Tree::new(&widget as &dyn Widget<(), cosmic::Theme, cosmic::Renderer>);
+        let node = widget.layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(400.0, 80.0)),
+        );
+        let children = node.children();
+        for index in [0, 2, 6] {
+            assert_eq!(children[index].size().width, 16.0, "icon canvas {index}");
+            assert_eq!(children[index].size().height, 16.0, "icon canvas {index}");
+        }
+        assert_eq!(
+            MenuRow::label_indent(true),
+            32.0 + 2.0 * f32::from(theme::spacing().space_xxs)
+        );
     }
 
     #[test]

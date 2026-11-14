@@ -645,3 +645,189 @@ fn frame_rejects_undeclared_chrome_and_omits_hidden_inner_content() {
     assert_eq!(plan.size, Size::ZERO);
     assert!(plan.reports().is_empty());
 }
+
+#[test]
+fn native_region_marker_only_reports_the_accepted_stage() {
+    let renderer = renderer();
+    let region = |id| Region {
+        id: RegionId(id),
+        role: RegionRole::Section,
+        revision: 7,
+        section: Some(RegionId(id)),
+        column: Some(RegionId(20)),
+        order: Some(id as u32),
+        viewport: Some(RegionId(30)),
+        clips: Vec::new(),
+    };
+    let first = child(move |_| region_marker(Element::new(StatefulSource), region(1)));
+    let second = child(move |_| region_marker(widget::space().width(40).height(20), region(2)));
+    let mut root = stages(vec![
+        Stage::new(Level::Preferred, first),
+        Stage::new(Level::Mild, second),
+    ]);
+    let limits = layout::Limits::new(Size::ZERO, Size::new(100.0, 100.0));
+    let mut tree = Tree::empty();
+    let first_node = root.layout(&mut tree, &renderer, &limits);
+    let mut first_reports = RegionReports::default();
+    root.operate(
+        &mut tree,
+        Layout::new(&first_node),
+        &renderer,
+        &mut first_reports,
+    );
+    assert_eq!(first_reports.reports().len(), 1);
+    assert_eq!(first_reports.reports()[0].region.id, RegionId(1));
+    let second_node = root.layout(&mut tree, &renderer, &limits);
+    assert_eq!(root.selection().unwrap().as_ref().unwrap().stage_index, 1);
+    let mut reports = RegionReports::default();
+    root.operate(
+        &mut tree,
+        Layout::new(&second_node),
+        &renderer,
+        &mut reports,
+    );
+    assert_eq!(reports.reports().len(), 1);
+    assert_eq!(reports.reports()[0].region.id, RegionId(2));
+    assert_eq!(reports.reports()[0].bounds.size(), Size::new(40.0, 20.0));
+}
+
+#[test]
+fn native_region_reports_full_bounds_after_virtual_scroll() {
+    let renderer = renderer();
+    let marker = Region {
+        id: RegionId(1),
+        role: RegionRole::Section,
+        revision: 1,
+        section: None,
+        column: None,
+        order: None,
+        viewport: None,
+        clips: vec![],
+    };
+    let mut element: Element<'_, ()> = region_marker(widget::space().width(40).height(120), marker);
+    let mut tree = Tree::new(element.as_widget());
+    tree.diff(element.as_widget_mut());
+    let node = element.as_widget_mut().layout(
+        &mut tree,
+        &renderer,
+        &layout::Limits::new(Size::ZERO, Size::new(100.0, 200.0)),
+    );
+    let mut reports = RegionReports::default();
+    element.as_widget_mut().operate(
+        &mut tree,
+        Layout::new(&node).with_virtual_offset(Vector::new(0.0, 35.0)),
+        &renderer,
+        &mut reports,
+    );
+    assert_eq!(reports.reports()[0].bounds.y, -35.0);
+    assert_eq!(reports.reports()[0].bounds.height, 120.0);
+}
+
+#[test]
+fn region_observer_reports_initial_reflow_and_revision_without_redraw_loop() {
+    let renderer = renderer();
+    let make = |revision| {
+        observe_regions(
+            region_marker(
+                widget::space().width(Length::Fill).height(120),
+                Region {
+                    id: RegionId(1),
+                    role: RegionRole::Section,
+                    revision,
+                    section: None,
+                    column: None,
+                    order: None,
+                    viewport: None,
+                    clips: vec![],
+                },
+            ),
+            |reports| reports,
+        )
+    };
+    let mut view = make(1);
+    let mut tree = Tree::new(view.as_widget());
+    let redraw = |view: &mut Element<'_, RegionReports>, tree: &mut Tree, width, invalid| {
+        let bounds = Size::new(width, 200.0);
+        let node =
+            view.as_widget_mut()
+                .layout(tree, &renderer, &layout::Limits::new(Size::ZERO, bounds));
+        let mut messages = vec![];
+        let mut shell = Shell::new(&mut messages);
+        if invalid {
+            shell.invalidate_layout();
+        }
+        view.as_widget_mut().update(
+            tree,
+            &Event::Window(cosmic::iced::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            )),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut cosmic::iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(bounds),
+        );
+        messages
+    };
+    assert!(redraw(&mut view, &mut tree, 50.0, true).is_empty());
+    let first = redraw(&mut view, &mut tree, 50.0, false);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].reports()[0].bounds.width, 50.0);
+    assert!(redraw(&mut view, &mut tree, 50.0, false).is_empty());
+    view = make(1);
+    tree.diff(view.as_widget_mut());
+    assert!(redraw(&mut view, &mut tree, 50.0, false).is_empty());
+    let resized = redraw(&mut view, &mut tree, 90.0, false);
+    assert_eq!(resized.len(), 1);
+    assert_eq!(resized[0].reports()[0].bounds.width, 90.0);
+    view = make(2);
+    tree.diff(view.as_widget_mut());
+    let revised = redraw(&mut view, &mut tree, 90.0, false);
+    assert_eq!(revised.len(), 1);
+    assert_eq!(revised[0].reports()[0].region.revision, 2);
+}
+
+#[test]
+fn region_and_scroll_observers_preserve_distinct_native_size_hints() {
+    struct Hinted {
+        content: Element<'static, ()>,
+    }
+    impl Widget<(), Theme, Renderer> for Hinted {
+        forward_widget!((), Theme, Renderer; children, diff, size, layout, draw);
+        fn size_hint(&self) -> Size<Length> {
+            Size::new(Length::Fill, Length::FillPortion(2))
+        }
+    }
+    let source = || {
+        Element::new(Hinted {
+            content: widget::space().width(20).height(20).into(),
+        })
+    };
+    let expected = source().as_widget().size_hint();
+    assert_ne!(source().as_widget().size(), expected);
+    let marker = region_marker(
+        source(),
+        Region {
+            id: RegionId(1),
+            role: RegionRole::Section,
+            revision: 1,
+            section: None,
+            column: None,
+            order: None,
+            viewport: None,
+            clips: vec![],
+        },
+    );
+    assert_eq!(marker.as_widget().size_hint(), expected);
+    assert_eq!(
+        observe_regions(source(), |_| ()).as_widget().size_hint(),
+        expected
+    );
+    assert_eq!(
+        crate::scroll_intent::vertical(source(), |content| content, || ())
+            .as_widget()
+            .size_hint(),
+        expected
+    );
+}

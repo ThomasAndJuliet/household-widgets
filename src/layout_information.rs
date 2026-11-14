@@ -109,6 +109,7 @@ pub(super) struct SourceInformation<'a> {
 pub(super) struct VerifiedBox<'a, Message> {
     pub content: Element<'a, Message>,
     pub reports: Vec<SourceReport>,
+    pub regions: Vec<Region>,
     pub binding_matches: bool,
     pub agreement: Rc<Cell<bool>>,
 }
@@ -138,6 +139,17 @@ impl<Message> Widget<Message, Theme, Renderer> for VerifiedBox<'_, Message> {
         operation: &mut dyn Operation,
     ) {
         if self.agreement.get() && self.binding_matches {
+            for region in &self.regions {
+                let mut bounds = layout.bounds();
+                let offset = layout.virtual_offset();
+                bounds.x -= offset.x;
+                bounds.y -= offset.y;
+                let mut accepted = AcceptedRegion {
+                    region: region.clone(),
+                    bounds,
+                };
+                operation.custom(None, bounds, &mut accepted);
+            }
             for report in &self.reports {
                 // Custom operations receive a disposable copy; they cannot
                 // mutate the prepared plan or later publication.

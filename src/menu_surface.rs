@@ -407,11 +407,11 @@ impl<M: Clone + 'static> Content<M> {
             mark_width: rows
                 .iter()
                 .any(|row| matches!(row, Row::Item(item) if item.mark.is_some() && !(self.choice_body.is_some() && matches!(item.mark, Some(MenuMark::Radio(_))))))
-                .then_some(16.0),
+                .then_some(crate::menu::ICON_SIZE),
             icon_width: rows
                 .iter()
                 .any(|row| matches!(row, Row::Item(item) if item.icon.is_some()))
-                .then_some(14.0),
+                .then_some(crate::menu::ICON_SIZE),
             gap: 8.0,
         };
         let mut groups = vec![Vec::new()];
@@ -452,11 +452,16 @@ impl<M: Clone + 'static> Content<M> {
                         }
                         _ => None,
                     }
-                    .map(|name| widget::icon::icon((self.style.icon)(name)).size(16).into());
-                    let icon = item
-                        .icon
-                        .clone()
-                        .map(|icon| widget::icon::icon(icon).size(14).into());
+                    .map(|name| {
+                        widget::icon::icon((self.style.icon)(name))
+                            .size(crate::menu::ICON_SIZE as u16)
+                            .into()
+                    });
+                    let icon = item.icon.clone().map(|icon| {
+                        widget::icon::icon(icon)
+                            .size(crate::menu::ICON_SIZE as u16)
+                            .into()
+                    });
                     let trailing = item
                         .shortcut
                         .as_ref()
@@ -489,7 +494,7 @@ impl<M: Clone + 'static> Content<M> {
                             } else {
                                 "pan-end-symbolic"
                             }))
-                            .size(14)
+                            .size(crate::menu::ICON_SIZE as u16)
                             .into(),
                         ),
                         Some((self.on_path)(toggle)),
